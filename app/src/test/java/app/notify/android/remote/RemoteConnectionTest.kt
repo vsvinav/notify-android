@@ -202,6 +202,32 @@ class RemoteConnectionTest {
         assertEquals(1, server.requestCount)
     }
 
+    @Test fun relayConflictRetriesWithFreshAuthorizationAndCryptoWithoutActions() {
+        grant()
+        server.enqueue(MockResponse().setResponseCode(409))
+        grant()
+        val relay = Relay().also { it.enqueue() }
+        connection.connect()
+        status("disconnected")
+        status("connected")
+        assertEquals(6, server.requestCount)
+        assertEquals(2, synchronized(peers) { peers.size })
+        assertTrue(synchronized(peers) { peers.first().closed })
+        assertTrue(relay.frames.isEmpty())
+    }
+
+    @Test fun grantConflictAndRelayUnauthorizedRemainTerminal() {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"error":"Grant conflict."}"""))
+        connection.connect(); status("error")
+        Thread.sleep(1200)
+        assertEquals(1, server.requestCount)
+        grant()
+        server.enqueue(MockResponse().setResponseCode(401))
+        connection.connect(); status("error")
+        Thread.sleep(1200)
+        assertEquals(4, server.requestCount)
+    }
+
     @Test fun expiredOrMismatchedLeaseNeverOpensRelay() {
         grant(lease(expiresAt = System.currentTimeMillis() - 1))
         connection.connect(); status("error")

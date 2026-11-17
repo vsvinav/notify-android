@@ -192,7 +192,10 @@ class RemoteConnection internal constructor(
             else offer(Event.Binary(bytes))
         }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            val error = response?.let { HttpFailure(it.code, "Relay authorization or upgrade failed (${it.code}).") } ?: t
+            val error = response?.let {
+                if (it.code == 409) IOException("Previous relay connection is still closing.")
+                else HttpFailure(it.code, "Relay authorization or upgrade failed (${it.code}).")
+            } ?: t
             response?.close()
             offer(Event.Failed(error))
         }
