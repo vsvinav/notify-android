@@ -1,0 +1,17 @@
+.gradle/
+.local-build/
+.kotlin/
+.cxx/
+**/build/
+**/target/
+.DS_Store
+local.properties
+*.jks
+*.keystore
+google-services.json
+DESIGN.md
+PRODUCT.md
+.impeccable/
+.github/skills/
+.github/agents/
+.github/hooks/
