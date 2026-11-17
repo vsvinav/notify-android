@@ -1,0 +1,23 @@
+[package]
+name = "notify-android"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jni = "=0.21.1"
+notify-channel = { path = "notify-channel", default-features = false }
+
+[dev-dependencies]
+openmls_basic_credential = "=0.6.0"
+openmls_traits = "=0.6.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = "debuginfo"

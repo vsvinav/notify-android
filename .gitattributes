@@ -1,3 +1,6 @@
 * text=auto
 gradlew text eol=lf
 *.bat text eol=crlf
+app/src/main/assets/third-party/*.txt -text -whitespace
+**/THIRD-PARTY-NOTICES.txt -text -whitespace
+**/licenses/*.txt -text -whitespace

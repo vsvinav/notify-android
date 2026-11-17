@@ -1,0 +1,388 @@
+package app.notify.android.controller
+
+import android.app.Activity
+import android.app.Application
+import android.os.SystemClock
+import androidx.credentials.exceptions.CreateCredentialCancellationException
+import androidx.credentials.exceptions.CreateCredentialException
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import app.notify.android.account.PasskeyAccount
+import app.notify.android.crypto.DeviceIdentity
+import app.notify.android.notifications.NotificationSettings
+import app.notify.android.notifications.NotificationState
+import app.notify.android.remote.*
+import java.io.IOException
+import java.security.GeneralSecurityException
+import java.security.ProviderException
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import org.json.JSONException
+import org.json.JSONObject
+
+data class ReplyReview(val card: RequestCard, val decision: ReplyDecision, val feedback: String, val preview: ReplyCommand)
+data class ControllerState(
+    val account: Account? = null, val relationship: Relationship? = null, val busy: Boolean = false,
+    val status: RemoteStatus = RemoteStatus("disconnected", "Sign in, then connect your saved Mac or pair in person."),
+    val error: String? = null, val inbox: RequestInbox = RequestInbox(), val workspace: WorkspaceState = WorkspaceState(),
+    val foreground: Boolean = false, val now: Long = 0, val review: ReplyReview? = null,
+    val controlReview: ControlCommand? = null, val notices: String? = null,
+    val notifications: NotificationState = NotificationState(),
+) {
+    val live get() = foreground && status.state == "connected" && inbox.isLive(now)
+    fun endAccountSession() = copy(account = null, inbox = RequestInbox(), workspace = WorkspaceState(),
+        status = RemoteStatus("disconnected", "Sign in again to reconnect. Your Mac pairing is saved."),
+        review = null, controlReview = null)
+    fun staleSnapshots() = copy(inbox = inbox.copy(connected = false), workspace = workspace.copy(receivedAt = null),
+        review = null, controlReview = null)
+    fun retireConnection(): ControllerState {
+        val retired = inbox.beginConnection()
+        val retained = inbox.cards.map { card ->
+            if (card.delivery is Delivery.Pending) card.copy(delivery = Delivery.Unknown) else card
+        }
+        return staleSnapshots().copy(inbox = retired.copy(cards = retained, selectedTicket = inbox.selectedTicket))
+    }
+}
+
+class ControllerViewModel(application: Application) : AndroidViewModel(application) {
+    private val mutable = MutableStateFlow(ControllerState())
+    val state = mutable.asStateFlow()
+    private val service = ServiceClient(SERVICE_ORIGIN.toHttpUrl())
+    private val prefs = application.getSharedPreferences("notify-relationship-v1", Application.MODE_PRIVATE)
+    private val store = RelationshipStore(object : RelationshipStorage {
+        override fun read() = prefs.getString("relationship", null)
+        override fun write(value: String?) {
+            check(prefs.edit().apply { if (value == null) remove("relationship") else putString("relationship", value) }.commit()) {
+                "Could not save pairing metadata. Check device storage before continuing."
+            }
+        }
+    }, object : IdentityKeys<DeviceIdentity> {
+        override fun create(id: String) = DeviceIdentity.create(id).publicKey
+        override fun load(id: String, expected: ByteArray) = DeviceIdentity.load(id, expected)
+        override fun delete(id: String) = DeviceIdentity.delete(id)
+    })
+    private var connection: RemoteConnection? = null
+    private var connectionGeneration = 0L
+    private var polling: Job? = null
+    private var clock: Job? = null
+    private var resumeConnection = false
+    private var attentionOpened = false
+    private val cleanup = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val notificationSettings = NotificationSettings(application)
+    private val notificationListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        viewModelScope.launch {
+            refreshNotifications()
+            if (key == "tokenHash" && state.value.foreground && !state.value.busy &&
+                state.value.notifications.consent && state.value.account != null &&
+                state.value.relationship?.account == state.value.account) enableNotifications()
+        }
+    }
+
+    init {
+        notificationSettings.prefs.registerOnSharedPreferenceChangeListener(notificationListener)
+        operation {
+            val saved = withContext(Dispatchers.IO) { store.read() }
+            change { copy(relationship = saved) }
+            refreshNotifications()
+        }
+    }
+    private fun change(block: ControllerState.() -> ControllerState) { mutable.value = mutable.value.block() }
+    fun clearError() = change { copy(error = null) }
+    fun foreground(active: Boolean) {
+        NotificationSettings.foreground = active
+        refreshNotifications()
+        change { copy(foreground = active, now = SystemClock.elapsedRealtime(), review = null, controlReview = null) }
+        if (!active) {
+            val reconnect = connection != null
+            disconnect()
+            resumeConnection = reconnect
+        } else if (resumeConnection && state.value.account != null) {
+            resumeConnection = false
+            retry()
+        }
+    }
+    private fun invalidate() {
+        change { staleSnapshots() }
+    }
+    fun disconnect() {
+        connectionGeneration++
+        resumeConnection = false
+        polling?.cancel(); polling = null
+        clock?.cancel(); clock = null
+        val old = connection; connection = null
+        cleanup.launch { old?.close() }
+        change { retireConnection() }
+        change { copy(status = RemoteStatus("disconnected", "Disconnected. Pairing is saved; no actions are queued.")) }
+    }
+    fun signIn(activity: Activity, register: Boolean, name: String) = operation {
+        disconnect()
+        val account = PasskeyAccount(service).authenticate(activity, register, name)
+        change { copy(account = account, status = RemoteStatus("disconnected", "Signed in. Mac trust is separate; connect or pair below.")) }
+        refreshNotifications()
+        if (state.value.notifications.consent && state.value.relationship?.account != account) {
+            notificationSettings.disableLocally()
+            refreshNotifications()
+        } else if (state.value.notifications.consent && !state.value.notifications.registered) registerNotifications()
+        val record = state.value.relationship
+        if (attentionOpened && record?.enrolled == true && record.account == account && state.value.foreground) {
+            attentionOpened = false
+            connect(record)
+        }
+    }
+    fun signOut() = operation {
+        removeNotifications()
+        disconnect()
+        service.postScoped("/v1/account/logout", JSONObject())
+        change { endAccountSession() }
+    }
+    private suspend fun verifyAccount(fresh: Boolean = false): Account {
+        val session = service.postScoped("/v1/account/session", JSONObject())
+        val account = Account.parse(session.getJSONObject("account"))
+        check(session.opt("scope") == "account" && account == state.value.account) { "Your account changed. Sign in again; pairing was kept." }
+        check(!fresh || session.opt("fresh") == true) { "Pairing requires a fresh passkey sign-in. Sign in again first." }
+        return account
+    }
+    fun pair(link: String, name: String) = operation {
+        val setup = PairingLink.parse(link, service.origin)
+        val account = verifyAccount(fresh = true)
+        val record = withContext(Dispatchers.IO) { store.create(account, setup, name.trim()) }
+        change { copy(relationship = record) }
+        val pending = service.postScoped("/v1/remote/pair", JSONObject().put("setupID", setup.setupID)
+            .put("deviceID", record.deviceID).put("publicKey", record.publicKey).put("name", record.name))
+        check(pending.opt("macID") == record.macID && pending.opt("macPublicKey") == record.macPublicKey &&
+            Account.parse(pending.getJSONObject("account")) == account) {
+            "Pairing response does not match your pinned Mac and account. Do not approve. Forget this pairing and check your Mac."
+        }
+        val enrolled = withContext(Dispatchers.IO) { store.enrolled(record) }
+        change { copy(relationship = enrolled) }
+        connect(enrolled)
+    }
+    fun retry() = operation {
+        val record = checkNotNull(state.value.relationship) { "Pair with your Mac first." }
+        verifyAccount()
+        check(record.account == state.value.account) { "Sign in with the account used for this saved Mac. Pairing was kept." }
+        check(record.enrolled) {
+            "Enrollment was not confirmed. Check the Mac, then explicitly forget and pair again in person; nothing was resent."
+        }
+        connect(record)
+    }
+    private suspend fun connect(record: Relationship) {
+        disconnect()
+        check(state.value.foreground) { "Return to Notify, then tap Retry." }
+        val generation = connectionGeneration
+        val identity = withContext(Dispatchers.IO) { store.identity(record) }
+        if (generation != connectionGeneration || !state.value.foreground) return
+        val remote = RemoteConnection(service, identity, record.macID, record.deviceID, decodeKey(record.macPublicKey)) { status ->
+            viewModelScope.launch {
+                if (generation != connectionGeneration) return@launch
+                change { copy(status = status) }
+                if (status.state == "connected") startPolling(generation)
+                else {
+                    polling?.cancel(); polling = null
+                    clock?.cancel(); clock = null
+                    if (status.state in setOf("connecting", "disconnected", "error")) change { retireConnection() }
+                    else invalidate()
+                }
+            }
+        }
+        connection = remote
+        withContext(Dispatchers.IO) { remote.connect() }
+    }
+    fun forget() = operation {
+        removeNotifications()
+        disconnect()
+        withContext(Dispatchers.IO) { store.forget() }
+        change { copy(relationship = null, inbox = RequestInbox(), workspace = WorkspaceState()) }
+    }
+    fun refreshNotifications() = change { copy(notifications = notificationSettings.state()) }
+    fun notificationPermissionDenied() {
+        refreshNotifications()
+        change { copy(error = "Notifications were not allowed. They are not enabled; you can change this in Android settings.") }
+    }
+    fun openNotificationSettings() { notificationSettings.createChannel(); notificationSettings.openSettings() }
+    fun enableNotifications() = operation { registerNotifications() }
+    private suspend fun registerNotifications() {
+        val record = checkNotNull(state.value.relationship) { "Pair with your Mac before enabling notifications." }
+        val account = verifyAccount()
+        check(record.account == account) { "Sign in with this pairing's account. Notifications were not registered." }
+        try {
+            val token = notificationSettings.beginRegistration()
+            val identity = withContext(Dispatchers.IO) { store.identity(record) }
+            PushRegistration({ path, body -> service.postScoped(path, body) }).update(record, token, identity::sign)
+            notificationSettings.registered(token)
+        } finally { refreshNotifications() }
+    }
+    fun disableNotifications() = operation { removeNotifications() }
+    private suspend fun removeNotifications() {
+        notificationSettings.disableLocally()
+        refreshNotifications()
+        if (!state.value.notifications.cleanupPending) return
+        val record = checkNotNull(state.value.relationship) { "Notifications are off locally. Revoke this phone on your Mac to remove routing." }
+        check(verifyAccount() == record.account) { "Sign in to the paired account to remove notification routing." }
+        try {
+            val identity = withContext(Dispatchers.IO) { store.identity(record) }
+            PushRegistration({ path, body -> service.postScoped(path, body) }).update(record, null, identity::sign)
+            notificationSettings.removed()
+        } finally { refreshNotifications() }
+    }
+    fun openAttention() {
+        attentionOpened = true
+        disconnect()
+        if (state.value.account != null && state.value.relationship != null) {
+            if (state.value.foreground) { attentionOpened = false; retry() }
+            else resumeConnection = true
+        }
+    }
+    private fun startPolling(generation: Long) {
+        val inboxGeneration = state.value.inbox.generation
+        polling?.cancel()
+        clock?.cancel()
+        clock = viewModelScope.launch {
+            while (isActive) { change { copy(now = SystemClock.elapsedRealtime()) }; delay(500) }
+        }
+        polling = viewModelScope.launch {
+            while (isActive && generation == connectionGeneration && state.value.foreground) {
+                guarded {
+                    val remote = checkNotNull(connection)
+                    val requests = withContext(Dispatchers.IO) { Snapshots.requests(remote.request("state", JSONObject())) }
+                    if (generation != connectionGeneration || inboxGeneration != state.value.inbox.generation) return@guarded
+                    val now = SystemClock.elapsedRealtime()
+                    change {
+                        val updated = if (requests.connected) inbox.receive(inboxGeneration, true, requests.requests, now)
+                            else inbox.copy(connected = false)
+                        copy(inbox = updated, review = review?.takeIf { review ->
+                            requests.connected && updated.cards.any { it == review.card }
+                        })
+                    }
+                    val selected = state.value.workspace.sessionID
+                    val snapshot = withContext(Dispatchers.IO) {
+                        Snapshots.workspace(remote.request("workspace", JSONObject().put("sessionID", selected ?: JSONObject.NULL)))
+                    }
+                    if (generation != connectionGeneration || inboxGeneration != state.value.inbox.generation ||
+                        selected != state.value.workspace.sessionID) return@guarded
+                    change {
+                        val updated = workspace.receive(snapshot, SystemClock.elapsedRealtime())
+                        copy(workspace = updated, controlReview = controlReview?.takeIf {
+                            updated.target == it.target && updated.unavailable(it.action, now) == null
+                        })
+                    }
+                }
+                delay(2000)
+            }
+        }
+    }
+    fun selectRequest(ticket: String) = local { change { copy(inbox = inbox.select(ticket), review = null) } }
+    fun answer(ticket: String, questionID: String, draft: AnswerDraft) = local {
+        check(state.value.live) { "Wait for a fresh Mac update before editing a reply." }
+        change { copy(inbox = inbox.edit(ticket, questionID, draft), review = null) }
+    }
+    fun reviewReply(ticket: String, decision: ReplyDecision, feedback: String) = local {
+        check(state.value.live) { "Wait for a fresh Mac update." }
+        val inbox = state.value.inbox
+        val prepared = inbox.prepare(ticket, decision, SystemClock.elapsedRealtime(), feedback)
+        change { copy(review = ReplyReview(inbox.cards.single { it.request.ticket == ticket }, decision, feedback, prepared.command)) }
+    }
+    fun cancelReview() = change { copy(review = null, controlReview = null) }
+    fun confirmReply() = operation {
+        val review = checkNotNull(state.value.review) { "Review the current request again." }
+        change { copy(review = null) }
+        check(state.value.live && state.value.inbox.cards.any { it == review.card }) { "The request changed. Review it again." }
+        val generation = connectionGeneration
+        val prepared = state.value.inbox.prepare(review.card.request.ticket, review.decision, SystemClock.elapsedRealtime(), review.feedback)
+        change { copy(inbox = prepared.inbox) }
+        var acknowledged = false
+        try {
+            checkNotNull(connection).request("reply", Snapshots.reply(prepared.command), prepared.command.id)
+            if (generation == connectionGeneration) {
+                change { copy(inbox = inbox.acknowledge(prepared.inbox.generation, prepared.command.id)) }
+                acknowledged = true
+            }
+        } finally {
+            if (!acknowledged) change { copy(inbox = inbox.uncertain(prepared.inbox.generation, prepared.command.id)) }
+        }
+    }
+    fun selectSession(id: String?, agentID: String = "") {
+        change { copy(workspace = workspace.select(id, agentID), controlReview = null) }
+    }
+    fun draft(text: String) = local { change { copy(workspace = workspace.edit(text), controlReview = null) } }
+    fun prepareControl(action: String) = local {
+        check(state.value.live) { "Wait for a fresh Mac update." }
+        val command = state.value.workspace.prepare(action, SystemClock.elapsedRealtime())
+        if (action == "queue") sendControl(command) else change { copy(controlReview = command) }
+    }
+    fun confirmControl() { state.value.controlReview?.let(::sendControl) }
+    private fun sendControl(command: ControlCommand) = operation {
+        change { copy(controlReview = null) }
+        check(state.value.live) { "Wait for a fresh Mac update." }
+        state.value.workspace.validate(command, SystemClock.elapsedRealtime())
+        val generation = connectionGeneration
+        change { copy(workspace = workspace.sending(command)) }
+        var acknowledged = false
+        try {
+            val result = checkNotNull(connection).request("control", command.json(), command.id)
+            if (generation == connectionGeneration) {
+                check(result.bool("ok")) { "The Mac did not acknowledge this control. Check the exact target; nothing was resent." }
+                change { copy(workspace = workspace.acknowledge(command, result.text("commandID", 256, true), result.text("status", 64, true))) }
+                acknowledged = true
+            }
+        } finally {
+            if (!acknowledged) change { copy(workspace = workspace.uncertain(command)) }
+        }
+    }
+    fun notices() = operation {
+        val text = withContext(Dispatchers.IO) {
+            listOf("notify-notifications.txt", "notify-crypto.txt").joinToString("\n\n") { name ->
+                getApplication<Application>().assets.open("third-party/$name").bufferedReader().use { it.readText() }
+            }
+        }
+        change { copy(notices = text) }
+    }
+    fun closeNotices() = change { copy(notices = null) }
+    private fun local(block: () -> Unit) {
+        try { block() }
+        catch (error: IllegalArgumentException) { failure(error) }
+        catch (error: IllegalStateException) { failure(error) }
+    }
+    private fun operation(block: suspend () -> Unit) {
+        if (state.value.busy) return
+        change { copy(busy = true, error = null) }
+        viewModelScope.launch {
+            try { guarded(block) } finally { change { copy(busy = false) } }
+        }
+    }
+    private suspend fun guarded(block: suspend () -> Unit) {
+        try { block() }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: GetCredentialCancellationException) { change { copy(error = "Passkey sign-in cancelled. Nothing changed.") } }
+        catch (_: CreateCredentialCancellationException) { change { copy(error = "Passkey creation cancelled. Nothing changed.") } }
+        catch (error: GetCredentialException) { change { copy(error = "Passkey sign-in unavailable: ${error.message}. Check your credential provider and try again.") } }
+        catch (error: CreateCredentialException) { change { copy(error = "Passkey creation unavailable: ${error.message}. Check your credential provider and try again.") } }
+        catch (error: IOException) { failure(error); invalidate() }
+        catch (error: GeneralSecurityException) { failure(error) }
+        catch (error: ProviderException) { failure(IllegalStateException("AndroidKeyStore could not use this phone identity. No replacement was created. Check device security settings.", error)) }
+        catch (error: JSONException) { failure(IllegalArgumentException("Unsupported Mac or service response. Check on your Mac.", error)); invalidate() }
+        catch (error: IllegalArgumentException) { failure(error); invalidate() }
+        catch (error: IllegalStateException) { failure(error) }
+    }
+    private fun failure(error: Exception) {
+        if (error is ServiceEndpointFailure) {
+            if (error.endsAccountSession) disconnect()
+            change { withServiceFailure(error) }
+        } else change { copy(error = when {
+            error is HttpFailure && error.status >= 500 -> "Notify service is temporarily unavailable. Retry without re-pairing. ${error.message}"
+            error is RemoteRequestFailure && error.status == 401 -> "Mac pairing authorization expired or was revoked. Check Remote Access on your Mac. Account sign-in is separate; pairing was kept. ${error.message}"
+            error is IOException && error !is HttpFailure && error !is RemoteRequestFailure ->
+                "Connection could not be confirmed. Check internet and keep your Mac awake. ${error.message} No action was retried."
+            else -> error.message ?: "Could not complete this operation. Check your Mac and retry."
+        }) }
+    }
+    override fun onCleared() {
+        notificationSettings.prefs.unregisterOnSharedPreferenceChangeListener(notificationListener)
+        val old = connection
+        cleanup.launch { try { old?.close(); service.close() } finally { cleanup.cancel() } }
+    }
+}

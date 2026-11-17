@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -13,8 +14,22 @@ android {
         applicationId = "app.notify.android"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+    }
+
+    signingConfigs.getByName("debug").storeFile =
+        file("../.local-build/android/debug.keystore")
+    buildTypes.getByName("release") {
+        signingConfig = signingConfigs.getByName("debug")
+        isDebuggable = false
+    }
+    sourceSets["main"].jniLibs.srcDir("../crypto/jniLibs")
+    packaging {
+        jniLibs.useLegacyPackaging = false
     }
 
     compileOptions {
@@ -29,10 +44,28 @@ android {
     }
 }
 
+tasks.named("preBuild") {
+    doFirst {
+        check(file("../crypto/jniLibs/arm64-v8a/libnotify_android.so").isFile) {
+            "Notify native crypto is missing. Run bash crypto/build-android.sh from the repository root."
+        }
+    }
+}
+
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.11.00"))
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.credentials:credentials:1.6.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.6.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.firebase:firebase-messaging:25.0.1")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
 }

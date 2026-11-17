@@ -1,0 +1,116 @@
+{
+  "description": "Pinned upstream license texts for published crates lacking bundled license documents. MPL-2.0 uses the license steward’s versioned canonical text; package license declarations remain MPL-2.0 despite the libcrux repository root Apache license. Files are copied verbatim; SHA-256 detects changes. Source revisions come from each crate’s .cargo_vcs_info.json.",
+  "inputs": [
+    {
+      "repository": "https://github.com/hacspec/hax",
+      "revision": "d8b5b3d3b666fee8943a351445d2b680105e8ea3",
+      "license": "Apache-2.0",
+      "packages": [
+        "hax-lib@0.3.7",
+        "hax-lib-macros@0.3.7"
+      ],
+      "url": "https://raw.githubusercontent.com/hacspec/hax/d8b5b3d3b666fee8943a351445d2b680105e8ea3/LICENSE",
+      "file": "upstream-9a50bad5a51e0ad7.txt",
+      "sha256": "9a50bad5a51e0ad726ea3a7f4b7b758e1b4d1784e6abefe1367f5bf01e972725"
+    },
+    {
+      "repository": "https://github.com/celabshq/libcrux",
+      "revision": "c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd",
+      "license": "MPL-2.0",
+      "packages": [
+        "hpke-rs@0.7.0",
+        "hpke-rs-crypto@0.7.0",
+        "hpke-rs-libcrux@0.7.0",
+        "hpke-rs-rust-crypto@0.7.0"
+      ],
+      "url": "https://www.mozilla.org/media/MPL/2.0/index.txt",
+      "file": "upstream-3f3d9e0024b1921b.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "repository": "https://github.com/cryspen/libcrux",
+      "revision": "c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd",
+      "license": "Apache-2.0",
+      "packages": [
+        "libcrux-aead@0.0.9",
+        "libcrux-aes@0.0.9",
+        "libcrux-chacha20poly1305@0.0.9",
+        "libcrux-curve25519@0.0.8",
+        "libcrux-ecdh@0.0.8",
+        "libcrux-hkdf@0.0.8",
+        "libcrux-hmac@0.0.8",
+        "libcrux-intrinsics@0.0.8",
+        "libcrux-kem@0.0.9",
+        "libcrux-ml-kem@0.0.10",
+        "libcrux-p256@0.0.8",
+        "libcrux-secrets@0.0.6",
+        "libcrux-sha2@0.0.8",
+        "libcrux-sha3@0.0.10",
+        "libcrux-traits@0.0.8"
+      ],
+      "url": "https://raw.githubusercontent.com/cryspen/libcrux/c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd/LICENSE",
+      "file": "upstream-c517c468fc7f8d83.txt",
+      "sha256": "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564"
+    },
+    {
+      "repository": "https://github.com/cryspen/libcrux",
+      "revision": "451259bb704d4a9dab8cd31ac68a97e766fbd2bc",
+      "license": "Apache-2.0",
+      "packages": [
+        "libcrux-hacl-rs@0.0.5",
+        "libcrux-poly1305@0.0.6"
+      ],
+      "url": "https://raw.githubusercontent.com/cryspen/libcrux/451259bb704d4a9dab8cd31ac68a97e766fbd2bc/LICENSE",
+      "file": "upstream-c517c468fc7f8d83.txt",
+      "sha256": "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564"
+    },
+    {
+      "repository": "https://github.com/cryspen/libcrux",
+      "revision": "8ebe73237378c80b86a953ec8a77bdd3299918e7",
+      "license": "Apache-2.0",
+      "packages": [
+        "libcrux-macros@0.0.3"
+      ],
+      "url": "https://raw.githubusercontent.com/cryspen/libcrux/8ebe73237378c80b86a953ec8a77bdd3299918e7/LICENSE",
+      "file": "upstream-c517c468fc7f8d83.txt",
+      "sha256": "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564"
+    },
+    {
+      "repository": "https://github.com/cryspen/libcrux",
+      "revision": "316fcd6c19c2e33bd0429e1319b6557d91038512",
+      "license": "Apache-2.0",
+      "packages": [
+        "libcrux-platform@0.0.3"
+      ],
+      "url": "https://raw.githubusercontent.com/cryspen/libcrux/316fcd6c19c2e33bd0429e1319b6557d91038512/LICENSE",
+      "file": "upstream-c517c468fc7f8d83.txt",
+      "sha256": "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564"
+    },
+    {
+      "repository": "https://github.com/openmls/openmls",
+      "revision": "8a8f83b4b61fc45f28facec25e914992b3465de6",
+      "license": "MIT",
+      "packages": [
+        "openmls@0.9.2"
+      ],
+      "url": "https://raw.githubusercontent.com/openmls/openmls/8a8f83b4b61fc45f28facec25e914992b3465de6/LICENSE",
+      "file": "upstream-43e5e3c4b5cca67f.txt",
+      "sha256": "43e5e3c4b5cca67f9ea912f7e1929702a848aa765d3b3e14f25d3838a5a5565d"
+    },
+    {
+      "repository": "https://github.com/openmls/openmls",
+      "revision": "3a3e35de3feeca8f6605143c464d5452ae584d43",
+      "license": "MIT",
+      "packages": [
+        "openmls_basic_credential@0.6.0",
+        "openmls_memory_storage@0.6.0",
+        "openmls_rust_crypto@0.6.0",
+        "openmls_serialization_helpers@0.1.0",
+        "openmls_traits@0.6.0"
+      ],
+      "url": "https://raw.githubusercontent.com/openmls/openmls/3a3e35de3feeca8f6605143c464d5452ae584d43/LICENSE",
+      "file": "upstream-43e5e3c4b5cca67f.txt",
+      "sha256": "43e5e3c4b5cca67f9ea912f7e1929702a848aa765d3b3e14f25d3838a5a5565d"
+    }
+  ]
+}
