@@ -170,12 +170,14 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
             }
         }
         state.controlReview?.let { command ->
-            Confirmation(if (command.action == "stop") "Stop this exact target?" else "Interrupt the main agent?",
-                controller::cancelReview, controller::confirmControl, state.live && !state.busy) {
+            Confirmation(if (command.isPolicy) "Enable Dangerous Auto-yes?" else if (command.action == "stop") "Stop this exact target?" else "Interrupt the main agent?",
+                controller::cancelReview, controller::confirmControl, state.live && !state.busy,
+                confirmLabel = if (command.isPolicy) "Enable dangerous mode" else "Confirm") {
                 Evidence("Session", command.sessionID)
                 Evidence("Ticket", command.ticket)
                 Evidence("Target", if (command.agentID.isEmpty()) "Main agent" else command.agentID)
-                Text(if (command.action == "interrupt") "Stop the current main-agent turn and send the instruction below instead."
+                Text(if (command.isPolicy) "Currently waiting eligible tools may immediately be approved. Ongoing eligible tools may also be approved, including destructive work. Questions stay manual.\n\nThis applies only to this session. It stays enabled after your PHONE disconnects until manually disabled or the session stops. Provider disconnects and errors still turn it off.\n\nThis replaces normal session Auto-yes; the two modes cannot be enabled together."
+                    else if (command.action == "interrupt") "Stop the current main-agent turn and send the instruction below instead."
                     else if (command.agentID.isEmpty()) "Stop the current main-agent turn. This does not delete the session."
                     else "Stop only this selected subagent. Its descendants may also stop. Other agents are not selected.")
                 if (command.text.isNotEmpty()) Evidence("Exact instruction", command.text)
@@ -400,6 +402,7 @@ internal fun Sessions(state: ControllerState, controller: ControllerViewModel,
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }
+            DangerousPolicy(state, controller)
             val decisions = decisionCards(state, workspace.sessionID).size
             TabRow(selectedTabIndex = pane.ordinal) {
                 SessionPane.entries.forEach { tab ->
@@ -429,6 +432,45 @@ internal fun Sessions(state: ControllerState, controller: ControllerViewModel,
 }
 
 private enum class SessionPane { Chat, Decision, Agents }
+
+@Composable
+private fun DangerousPolicy(state: ControllerState, controller: ControllerViewModel) {
+    val workspace = state.workspace
+    val policy = workspace.session?.dangerousAutoYes
+    val active = policy?.enabled == true
+    val fresh = state.live && workspace.receivedAt?.let { state.now >= it && state.now - it < 10_000 } == true &&
+        workspace.snapshot?.connected == true && workspace.session?.connected == true
+    val pending = workspace.policyDelivery?.blocked == true
+    val label = when {
+        policy == null -> "Dangerous Auto-yes · Unsupported"
+        active && (!fresh || pending) -> "Dangerous Auto-yes · Last known On"
+        active -> "Dangerous Auto-yes · On"
+        !fresh || pending -> "Dangerous Auto-yes · Unknown (last known Off)"
+        else -> "Dangerous Auto-yes · Off"
+    }
+    Surface(color = if (active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.surface,
+        contentColor = if (active) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onSurface) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(label, style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+            if (active) Text("This session can approve eligible tools, even while your phone is disconnected.",
+                style = MaterialTheme.typography.bodySmall)
+            if (fresh) workspace.policyDelivery?.let { Text(it.status, style = MaterialTheme.typography.bodySmall) }
+            val enabling = !active && !pending
+            val unavailable = workspace.select(workspace.sessionID).policyUnavailable(state.now, enabling)
+            if (!fresh) Text("Reconnect to verify the Mac policy. Off has not been confirmed.",
+                style = MaterialTheme.typography.bodySmall)
+            else if (unavailable != null) Text(unavailable, style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = { controller.preparePolicy(enabling) },
+                enabled = fresh && (if (enabling) !state.busy && !state.policyOffPending else !state.policyOffPending) && unavailable == null,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = LocalContentColor.current),
+                modifier = Modifier.heightIn(min = 48.dp)) {
+                Text(if (enabling) "Enable Dangerous Auto-yes…" else "Turn off now")
+            }
+        }
+    }
+}
 
 @Composable
 private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
@@ -595,10 +637,11 @@ private fun Conversation(workspace: WorkspaceState, position: FeedPosition, tool
     Page { TextButton(onClick = close) { Text("Back to Settings") }; Heading("Third-party notices"); SelectionContainer { Text(text) } }
 }
 @Composable internal fun Confirmation(title: String, cancel: () -> Unit, confirm: () -> Unit, enabled: Boolean,
+    confirmLabel: String = "Confirm",
     content: @Composable ColumnScope.() -> Unit) {
     AlertDialog(onDismissRequest = cancel, title = { Text(title) },
         text = { Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp), content = content) },
         dismissButton = { TextButton(onClick = cancel) { Text("Cancel") } },
-        confirmButton = { TextButton(onClick = confirm, enabled = enabled) { Text("Confirm") } })
+        confirmButton = { TextButton(onClick = confirm, enabled = enabled) { Text(confirmLabel) } })
 }

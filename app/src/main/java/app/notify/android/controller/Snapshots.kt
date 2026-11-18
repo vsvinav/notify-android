@@ -42,12 +42,16 @@ object Snapshots {
     }
     fun workspace(value: JSONObject): WorkspaceSnapshot {
         bounded(value)
+        val policyControls = value.bool("dangerousAutoYesControl", false) && value.bool("dangerousAutoYesOffEpoch", false)
         val sessions = value.objects("sessions", 256).map { s ->
             val c = s.getJSONObject("capabilities")
+            val policy = if (!s.has("dangerousAutoYes")) null else policy(s.getJSONObject("dangerousAutoYes"))
+            val capable = c.bool("dangerousAutoYes", false)
+            require(!capable || policy != null) { "Missing Mac policy state." }
             Session(s.text("id", 128, true), s.text("name", 2048), s.text("project", 2048), s.text("agent", 256),
                 s.text("state", 256), s.bool("connected"), s.text("ticket", 256),
-                Capabilities(c.bool("steering"), c.bool("subagentChat"), c.bool("subagentStop")),
-                s.reportedCount("runningCount"), s.reportedCount("idleCount"))
+                Capabilities(c.bool("steering"), c.bool("subagentChat"), c.bool("subagentStop"), capable && policyControls && policy?.hasOffAuthority == true),
+                s.reportedCount("runningCount"), s.reportedCount("idleCount"), policy)
         }
         require(sessions.map { it.id }.distinct().size == sessions.size) { "Ambiguous session identifiers." }
         val detail = if (!value.has("detail") || value.isNull("detail")) null else {
@@ -73,6 +77,16 @@ object Snapshots {
                 d.bool("truncated", false), team?.optionalText("error") ?: "")
         }
         return WorkspaceSnapshot(value.bool("connected"), sessions, detail, value.bool("truncated", false), value.optionalText("error"))
+    }
+    fun policy(value: JSONObject): DangerousAutoYes {
+        val revision = value.opt("revision")
+        require((revision is Int || revision is Long) && (revision as Number).toLong() in 1..9_007_199_254_740_991L) {
+            "Invalid Mac policy revision."
+        }
+        val policy = DangerousAutoYes(value.text("ticket", 256, true), (revision as Number).toLong(),
+            value.bool("enabled"), value.bool("normalEnabled"), if (value.has("offTicket")) value.text("offTicket", 256, true) else null)
+        require(!(policy.enabled && policy.normalEnabled)) { "Conflicting Mac Auto-yes modes." }
+        return policy
     }
     private fun JSONObject.reportedCount(name: String): Int? {
         if (!has(name)) return null

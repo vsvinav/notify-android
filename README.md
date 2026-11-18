@@ -56,7 +56,9 @@ camera, notification or control behavior.
 ## Connect your Mac
 
 1. On your Mac, open Notify's **Internet access** settings and enable internet.
-   If a QR is not shown, choose **Pair an internet device**.
+   The updated Mac helper prepares a fresh QR automatically. On older builds,
+   after a preparation error or when the invitation expires, choose
+   **Pair an internet device**. This does not reset saved pairing.
 2. In Android, tap **Scan Mac QR**. Camera permission is requested only then.
    Scan the Mac's QR, or use **Paste pairing link instead**.
 3. Continue with your existing Notify account passkey. Already signed in?
@@ -138,6 +140,25 @@ cannot be squeezed to zero height. Drafts and
 conversation positions remain tied to their exact targets during this app session.
 Changing filters never selects a different session.
 
+**Dangerous Auto-yes (unpublished source preview):** with matching updated Mac
+and helper builds, the session header controls the existing Mac-owned policy.
+Enabling requires a high-risk confirmation: waiting and future eligible tools
+may be approved immediately, including destructive work. Questions remain manual;
+normal session Auto-yes and Dangerous Auto-yes are mutually exclusive.
+The red On indicator and direct **Turn off now** remain available across the
+session tabs, without changing chat targets or drafts. State changes require a
+Mac acknowledgment. Offline or uncertain state retains last-known On/unknown;
+it never claims Off or automatically retries a toggle. Older builds show unsupported.
+Off keeps reserved command capacity even when ordinary history is full. If the
+helper confirms an attempt was not dispatched, refresh and explicitly tap Off again.
+An unknown Off cannot be sent again for the same policy epoch; check the Mac.
+
+**Disconnecting the phone does not turn it off.** It remains enabled for that
+session until manually disabled or the session stops. Provider disconnect,
+capability loss, errors, dispatch failures and Mac shutdown retain native
+fail-safe resets. These controls are not in the published 0.2.0 APK; physical-device
+acceptance of the new controls is still pending.
+
 Claude and other unsupported provider controls remain read-only. **Decision** opens
 the selected session's real approvals and questions; the drawer's **Needs you**
 entry keeps all sessions' pending requests discoverable. Review the
@@ -166,13 +187,6 @@ presentation and approved typed contracts for helper creation/model selection/re
 session colors/order; removing disconnected sessions, resume and relevant settings.
 These need exact capability/target checks and sensitive-action consent, not
 phone-side emulation.
-
-Remote Dangerous Auto-yes control is also planned, not implemented here. It must
-operate the same Mac-owned per-session policy with high-risk enable confirmation,
-acknowledged state, a persistent red indicator and direct Off. Phone disconnect
-must not silently turn it off; offline state cannot claim Off until the Mac
-acknowledges. Existing native fail-safe stops remain, questions stay manual, and
-no phone-side auto-approval engine or automatic toggle replay is permitted.
 
 Terminal/folder integration, extension installation and macOS floating windows
 remain Mac-only. Native Android camera/permission behavior, visual layout and

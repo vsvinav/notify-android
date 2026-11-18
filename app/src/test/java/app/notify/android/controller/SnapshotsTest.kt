@@ -9,6 +9,29 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SnapshotsTest {
+    @Test fun policySnapshotIsOptionalButNeverInventsOffOrAcceptsMalformedSupport() {
+        val wire = JSONObject("""{"connected":true,"sessions":[{"id":"s","name":"Build","project":"","agent":"copilot","state":"working","connected":true,"ticket":"t","capabilities":{"steering":false,"subagentChat":false,"subagentStop":false}}]}""")
+        assertNull(Snapshots.workspace(wire).sessions.single().dangerousAutoYes)
+        val row = wire.getJSONArray("sessions").getJSONObject(0)
+        row.getJSONObject("capabilities").put("dangerousAutoYes", true)
+        assertThrows(IllegalArgumentException::class.java) { Snapshots.workspace(wire) }
+        row.put("dangerousAutoYes", JSONObject("""{"ticket":"p","revision":1,"enabled":true,"normalEnabled":false}"""))
+        assertTrue(Snapshots.workspace(wire).sessions.single().dangerousAutoYes!!.enabled)
+        assertFalse("Old helpers must not advertise a control they cannot dispatch",
+            Snapshots.workspace(wire).sessions.single().capabilities.dangerousAutoYes)
+        wire.put("dangerousAutoYesControl", true)
+        assertFalse(Snapshots.workspace(wire).sessions.single().capabilities.dangerousAutoYes)
+        wire.put("dangerousAutoYesOffEpoch", true)
+        assertFalse("Legacy native policy cannot enable without bounded Off authority",
+            Snapshots.workspace(wire).sessions.single().capabilities.dangerousAutoYes)
+        row.getJSONObject("dangerousAutoYes").put("offTicket", "off-epoch-1")
+        assertFalse(Snapshots.workspace(wire).sessions.single().capabilities.dangerousAutoYes)
+        row.getJSONObject("dangerousAutoYes").put("offTicket", "00000000-0000-8000-8000-000000000001")
+        assertTrue(Snapshots.workspace(wire).sessions.single().capabilities.dangerousAutoYes)
+        row.getJSONObject("dangerousAutoYes").put("enabled", "false")
+        assertThrows(IllegalArgumentException::class.java) { Snapshots.workspace(wire) }
+    }
+
     @Test fun workspaceRetainsReportedHierarchyAndCountsButRejectsMalformedParentClaims() {
         val value = JSONObject("""{"connected":true,"sessions":[{"id":"s","name":"Build","project":"Notify","agent":"copilot","state":"working","connected":true,"ticket":"t","runningCount":4,"idleCount":2,"capabilities":{"steering":true,"subagentChat":true,"subagentStop":true}}],"detail":{"sessionID":"s","ticket":"t","team":{"agents":[{"id":"a","name":"Review","status":"running","task":"Check changes","model":"reported-model","parentKnown":true}],"runningCount":4,"idleCount":2,"truncated":true},"activity":[],"controls":[],"truncated":true}}""")
         val snapshot = Snapshots.workspace(value)

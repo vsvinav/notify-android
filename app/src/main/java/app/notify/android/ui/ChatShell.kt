@@ -229,6 +229,12 @@ private fun SessionDrawerRow(session: Session, presentation: AgentPresentation, 
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(session.name, style = MaterialTheme.typography.titleSmall)
+                if (session.dangerousAutoYes?.enabled == true) {
+                    Surface(color = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError) {
+                        Text("Dangerous Auto-yes · Last reported On", Modifier.padding(4.dp),
+                            style = MaterialTheme.typography.labelMedium)
+                    }
+                }
                 Text("${session.project} · ${session.agent}", style = MaterialTheme.typography.bodySmall)
                 Text(presentation.label, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)

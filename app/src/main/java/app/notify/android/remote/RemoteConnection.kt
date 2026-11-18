@@ -38,7 +38,8 @@ import org.json.JSONTokener
 
 data class RemoteStatus(val state: String, val message: String)
 
-class RemoteRequestFailure(message: String, val uncertain: Boolean, val status: Int? = null) : IOException(message)
+class RemoteRequestFailure(message: String, val uncertain: Boolean, val status: Int? = null,
+    val notDispatched: Boolean = false) : IOException(message)
 
 internal interface RemoteCrypto : Closeable {
     fun keyPackage(): ByteArray
@@ -102,6 +103,7 @@ class RemoteConnection internal constructor(
         var handshake: Job? = null
         val pending = mutableMapOf<String, PendingCall>()
         val usedIDs = mutableSetOf<String>()
+        val offCalls = mutableMapOf<String, OffCall>()
     }
 
     private data class Lease(val expiresAt: Long, val deadline: Long, val id: String, val challenge: String, val approved: Boolean)
@@ -109,7 +111,9 @@ class RemoteConnection internal constructor(
         val result: CompletableDeferred<JSONObject>,
         val deadline: Long,
         val expiresAt: Long,
+        val offSessionID: String? = null,
     )
+    private data class OffCall(val id: String, val payload: String)
     private sealed interface Event {
         data class Open(val protocol: String?) : Event
         data class Text(val text: String) : Event
@@ -281,7 +285,14 @@ class RemoteConnection internal constructor(
         else {
             val message = (data.opt("error") as? String)?.takeIf { it.isNotBlank() && it.length <= 500 }
                 ?: "Mac request failed ($status)."
-            call.result.completeExceptionally(RemoteRequestFailure(message, false, status.toInt()))
+            // Only this authenticated, definite pre-dispatch rejection releases an Off action ID.
+            // Lost responses, native failures and unknown outcomes retain the no-replay record.
+            val notDispatched = call.offSessionID != null && data.opt("notDispatched") == true &&
+                data.opt("status") != "unknown" && (status in 400..499 || status == 503L)
+            if (notDispatched && a.offCalls[call.offSessionID]?.id == value.getString("id").lowercase())
+                a.offCalls.remove(call.offSessionID)
+            call.result.completeExceptionally(RemoteRequestFailure(message, !notDispatched && call.offSessionID != null,
+                status.toInt(), notDispatched))
         }
     }
 
@@ -296,22 +307,32 @@ class RemoteConnection internal constructor(
             val payload = JSONObject().put("path", path).put("data", data)
             require(payload.toString().toByteArray().size <= 131_072) { "The Mac request is too large." }
             val key = id.lowercase()
+            val off = policyOff(path, data, id)
+            require(!OFF_ID.matches(id) || off) { "Off IDs cannot identify other requests." }
+            val offSessionID = if (off) data.getString("sessionID") else null
             val timeout = if (path == "reply" || path == "control") 25_000L else 12_000L
-            val call = PendingCall(CompletableDeferred(), elapsed() + timeout, wall() + timeout)
+            val call = PendingCall(CompletableDeferred(), elapsed() + timeout, wall() + timeout, offSessionID)
             val context = currentCoroutineContext()
             val a = synchronized(lock) {
                 context.ensureActive()
                 val a = expected
                 if (!current(a)) throw uncertainty()
                 require(!a.usedIDs.contains(key)) { "Request ID was already used. Nothing was resent." }
-                if (a.pending.size >= 8) throw RemoteRequestFailure("Connection is busy. Wait for the current requests.", false)
-                if (a.usedIDs.size >= 4096) {
+                val prior = a.offCalls.values.firstOrNull { it.id == key }
+                require(prior == null) { if (prior?.payload == payload.toString())
+                    "Off was already sent; its outcome may be unknown. Nothing was resent."
+                    else "Off ID was reused with different content. Nothing was resent." }
+                if (a.pending.size >= if (off) 9 else 8)
+                    throw RemoteRequestFailure("Connection is busy. Wait for the current requests.", false, notDispatched = off)
+                if ((!off && a.usedIDs.size >= 4096) ||
+                    (off && !a.offCalls.containsKey(offSessionID) && a.offCalls.size >= 256)) {
                     fail(a, IOException("Connection request history is full. Reconnecting without replay."))
-                    throw RemoteRequestFailure("Connection is refreshing. Nothing was sent.", false)
+                    throw RemoteRequestFailure("Connection is refreshing. Nothing was sent.", false, notDispatched = off)
                 }
                 try {
                     requireLive(a)
-                    a.usedIDs.add(key)
+                    if (off) a.offCalls[offSessionID!!] = OffCall(key, payload.toString())
+                    else a.usedIDs.add(key)
                     a.pending[key] = call
                     val bytes = crypto { a.peer!!.protect(JSONObject().put("id", id).put("epoch", a.epoch)
                         .put("payload", payload).toString().toByteArray()) }
@@ -501,8 +522,19 @@ class RemoteConnection internal constructor(
     private companion object {
         const val MAX_FRAME = 1_064_960
         val UUID_PATTERN = Regex("^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
+        val OFF_ID = Regex("(?i)^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$")
         val GRANT_PATTERN = Regex("^[A-Za-z0-9_-]{43}$")
         fun uuid(value: Any?) = value is String && UUID_PATTERN.matches(value)
+        fun policyOff(path: String, data: JSONObject, id: String): Boolean =
+            path == "control" && OFF_ID.matches(id) &&
+                shape(data, "id", "sessionID", "ticket", "action", "text", "enabled", "policyTicket", "offTicket") &&
+                data.opt("action") == "dangerous_auto_yes" && data.opt("enabled") == false && data.opt("text") == "" &&
+                (data.opt("id") as? String)?.equals(id, ignoreCase = true) == true &&
+                (data.opt("offTicket") as? String)?.equals(id, ignoreCase = true) == true &&
+                listOf("sessionID", "ticket", "policyTicket").all { field ->
+                    (data.opt(field) as? String)?.let { it.isNotEmpty() && it.length <= (if (field == "sessionID") 128 else 256) &&
+                        (field != "sessionID" || '\u0000' !in it) } == true
+                }
         fun integer(value: Any?): Long? = when (value) {
             is Int -> value.toLong()
             is Long -> value.takeIf { it in -9_007_199_254_740_991L..9_007_199_254_740_991L }

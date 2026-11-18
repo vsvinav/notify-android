@@ -28,6 +28,7 @@ import org.junit.Before
 import org.junit.Test
 import app.notify.android.controller.ControllerState
 import app.notify.android.controller.Snapshots
+import app.notify.android.controller.WorkspaceState
 
 /** Real HTTPS/WSS with a deterministic plaintext crypto fixture, NOT an MLS interoperability test. */
 class RemoteConnectionTest {
@@ -125,6 +126,125 @@ class RemoteConnectionTest {
         error("unreachable")
     }
 
+    private fun policyWorkspace(token: String = "00000000-0000-8000-8000-000000000001") =
+        WorkspaceState(sessionID = "s").receive(Snapshots.workspace(JSONObject("""
+            {"connected":true,"dangerousAutoYesControl":true,"dangerousAutoYesOffEpoch":true,"sessions":[{
+             "id":"s","ticket":"t","name":"Synthetic","project":"","agent":"copilot","state":"working","connected":true,
+             "capabilities":{"steering":true,"subagentChat":false,"subagentStop":false,"dangerousAutoYes":true},
+             "dangerousAutoYes":{"ticket":"p","offTicket":"$token","revision":1,"enabled":true,"normalEnabled":false}
+            }],"detail":null}
+        """)), 0)
+
+    @Test fun workspaceOffRejectedBeforeDispatchCanBeExplicitlyRequestedAgainOnSameConnection() = runBlocking {
+        grant(); val relay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        var workspace = policyWorkspace()
+        val first = workspace.preparePolicy(false, 0)
+        workspace = workspace.sending(first)
+        val rejected = async { runCatching { connection.request("control", first.json(), first.id) } }
+        val frame = withTimeout(3000) { while (relay.frames.isEmpty()) delay(10); relay.frames.take() }
+        relay.send(JSONObject().put("id", frame.getString("id")).put("status", 503)
+            .put("data", JSONObject().put("error", "Workspace is stale.").put("notDispatched", true)))
+        val failure = rejected.await().exceptionOrNull() as RemoteRequestFailure
+        assertEquals(503, failure.status)
+        assertTrue(failure.notDispatched)
+        assertFalse(failure.uncertain)
+        workspace = workspace.rejectPolicyBeforeDispatch(first, failure.message!!)
+        assertFalse(workspace.policyDelivery!!.blocked)
+        assertTrue(workspace.session!!.dangerousAutoYes!!.enabled)
+        assertFalse(workspace.policyDelivery!!.status.contains("unknown", ignoreCase = true))
+        workspace = workspace.receive(workspace.snapshot!!, 1)
+        val second = workspace.preparePolicy(false, 1)
+        val result = async { runCatching { connection.request("control", second.json(), second.id) } }
+        withTimeout(3000) { while (relay.frames.isEmpty() && !result.isCompleted) delay(10) }
+        assertFalse("A fresh explicit Off must reach the helper, not fail in the RPC UUID ledger", relay.frames.isEmpty())
+        val retry = relay.frames.take()
+        assertEquals(first.id, retry.getJSONObject("payload").getJSONObject("data").getString("id"))
+        relay.ack(retry.getString("id"))
+        assertTrue(result.await().isSuccess)
+    }
+
+    @Test fun workspaceOffCanUseNinthRpcSlotWithoutGivingOrdinaryRequestsAnotherSlot() = runBlocking {
+        grant(); val relay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        val ordinary = List(8) { async { connection.request("state", JSONObject()) } }
+        withTimeout(3000) { while (relay.frames.size < 8) delay(10) }
+        val off = policyWorkspace().preparePolicy(false, 0)
+        val result = async { runCatching { connection.request("control", off.json(), off.id) } }
+        withTimeout(3000) { while (relay.frames.size < 9 && !result.isCompleted) delay(10) }
+        assertEquals(9, relay.frames.size)
+        assertThrows(RemoteRequestFailure::class.java) { runBlocking { connection.request("state", JSONObject()) } }
+        val other = policyWorkspace("00000000-0000-8000-8000-000000000002").preparePolicy(false, 0)
+        val busy = runCatching { connection.request("control", other.json(), other.id) }.exceptionOrNull()
+        assertTrue(busy is RemoteRequestFailure && busy.notDispatched)
+        repeat(9) { relay.ack(relay.frames.take().getString("id")) }
+        assertTrue(result.await().isSuccess)
+        ordinary.forEach { it.await() }
+    }
+
+    @Test fun workspaceOffUnknownAckCannotReleaseActionOrBeRepurposedAsOrdinaryWork() = runBlocking {
+        grant(); val relay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        val off = policyWorkspace().preparePolicy(false, 0)
+        val result = async { runCatching { connection.request("control", off.json(), off.id) } }
+        withTimeout(3000) { while (relay.frames.isEmpty()) delay(10) }
+        relay.frames.take()
+        relay.send(JSONObject().put("id", off.id).put("status", 503).put("data",
+            JSONObject().put("error", "Lost native connection").put("status", "unknown").put("notDispatched", true)))
+        val failure = result.await().exceptionOrNull() as RemoteRequestFailure
+        assertTrue(failure.uncertain)
+        assertFalse(failure.notDispatched)
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { connection.request("control", off.json(), off.id) }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { connection.request("control", off.json().put("policyTicket", "mutated"), off.id) }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { connection.request("reply", JSONObject(), off.id) }
+        }
+        assertTrue(relay.frames.isEmpty())
+        val ordinaryID = UUID.randomUUID().toString()
+        val ordinary = async { runCatching { connection.request("reply", JSONObject(), ordinaryID) } }
+        withTimeout(3000) { while (relay.frames.isEmpty()) delay(1) }
+        relay.frames.take()
+        relay.send(JSONObject().put("id", ordinaryID).put("status", 503).put("data",
+            JSONObject().put("error", "Rejected").put("notDispatched", true)))
+        assertFalse((ordinary.await().exceptionOrNull() as RemoteRequestFailure).notDispatched)
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { connection.request("reply", JSONObject(), ordinaryID) }
+        }
+        assertTrue(relay.frames.isEmpty())
+    }
+
+    @Test fun workspaceOffSupports300FreshEpochsAfterOrdinaryRpcHistoryIsFull() = runBlocking {
+        grant(); val relay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        val ordinaryID = UUID.randomUUID().toString()
+        val ordinary = async { connection.request("state", JSONObject(), ordinaryID) }
+        withTimeout(3000) { while (relay.frames.isEmpty()) delay(1) }
+        relay.ack(relay.frames.take().getString("id")); ordinary.await()
+        repeat(4095) {
+            val read = async { connection.request("state", JSONObject()) }
+            withTimeout(3000) { while (relay.frames.isEmpty()) delay(1) }
+            relay.ack(relay.frames.take().getString("id")); read.await()
+        }
+        repeat(300) { cycle ->
+            val token = "00000000-0000-8000-8000-${(cycle + 1).toString(16).padStart(12, '0')}"
+            val workspace = policyWorkspace(token)
+            val off = workspace.preparePolicy(false, 0)
+            val result = async { connection.request("control", off.json(), off.id) }
+            withTimeout(3000) { while (relay.frames.isEmpty()) delay(1) }
+            val frame = relay.frames.take()
+            assertEquals(off.id, frame.getString("id"))
+            assertEquals(token, frame.getJSONObject("payload").getJSONObject("data").getString("offTicket"))
+            relay.ack(frame.getString("id")); result.await()
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { connection.request("state", JSONObject(), ordinaryID) }
+        }
+        assertTrue(relay.frames.isEmpty())
+    }
     @Test fun handshakeUsesCookieExactOriginPinnedKeyAndMatchingNativeAck() = runBlocking {
         grant()
         val relay = Relay().also { it.enqueue() }

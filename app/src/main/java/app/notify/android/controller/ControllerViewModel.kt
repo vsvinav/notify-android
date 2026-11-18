@@ -32,6 +32,7 @@ data class ControllerState(
     val error: String? = null, val inbox: RequestInbox = RequestInbox(), val workspace: WorkspaceState = WorkspaceState(),
     val foreground: Boolean = false, val now: Long = 0, val review: ReplyReview? = null,
     val controlReview: ControlCommand? = null, val notices: String? = null,
+    val policyOffPending: Boolean = false,
     val notifications: NotificationState = NotificationState(),
     val notificationSetupOpen: Boolean = false,
     val notificationPermissionPending: Boolean = false,
@@ -51,7 +52,10 @@ data class ControllerState(
     fun receiveWorkspace(snapshot: WorkspaceSnapshot, receivedAt: Long): ControllerState {
         val updated = workspace.receive(snapshot, receivedAt)
         return copy(now = receivedAt, workspace = updated, controlReview = controlReview?.takeIf {
-            updated.target == it.target && updated.unavailable(it.action, receivedAt) == null
+            if (it.isPolicy) updated.sessionID == it.sessionID && updated.session?.ticket == it.ticket &&
+                it.agentID.isEmpty() && updated.select(updated.sessionID).policyUnavailable(receivedAt, it.enabled == true) == null &&
+                updated.session?.dangerousAutoYes?.ticket == it.policyTicket
+            else updated.target == it.target && updated.unavailable(it.action, receivedAt) == null
         })
     }
     fun endAccountSession() = copy(account = null, inbox = RequestInbox(), workspace = WorkspaceState(),
@@ -393,7 +397,20 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         if (action == "queue") sendControl(command) else change { copy(controlReview = command) }
     }
     fun confirmControl() { state.value.controlReview?.let(::sendControl) }
-    private fun sendControl(command: ControlCommand) = operation {
+    fun preparePolicy(enabled: Boolean) = local {
+        check(state.value.live) { "Wait for a fresh Mac update. Off has not been confirmed." }
+        val command = state.value.workspace.select(state.value.workspace.sessionID).preparePolicy(enabled, SystemClock.elapsedRealtime())
+        if (enabled) change { copy(controlReview = command) }
+        else if (!state.value.policyOffPending) {
+            change { copy(policyOffPending = true, controlReview = null) }
+            viewModelScope.launch {
+                try { guarded { dispatchControl(command) } }
+                finally { change { copy(policyOffPending = false) } }
+            }
+        }
+    }
+    private fun sendControl(command: ControlCommand) = operation { dispatchControl(command) }
+    private suspend fun dispatchControl(command: ControlCommand) {
         change { copy(controlReview = null) }
         check(state.value.live) { "Wait for a fresh Mac update." }
         state.value.workspace.validate(command, SystemClock.elapsedRealtime())
@@ -403,10 +420,34 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         try {
             val result = checkNotNull(connection).request("control", command.json(), command.id)
             if (generation == connectionGeneration) {
-                check(result.bool("ok")) { "The Mac did not acknowledge this control. Check the exact target; nothing was resent." }
-                change { copy(workspace = workspace.acknowledge(command, result.text("commandID", 256, true), result.text("status", 64, true))) }
+                if (command.isPolicy && state.value.workspace.policyDeliveries[command.target]?.commandID != command.id) {
+                    acknowledged = true
+                    return
+                }
+                if (command.isPolicy) {
+                    val ok = result.bool("ok")
+                    check(result.text("commandID", 128, true).isNotBlank() &&
+                        result.text("status", 64, true) == if (ok) "applied" else "failed") {
+                        "Invalid Mac policy acknowledgment. Check this session on Mac."
+                    }
+                    val policy = Snapshots.policy(result.getJSONObject("dangerousAutoYes"))
+                    change { copy(workspace = workspace.acknowledgePolicy(command, policy, ok, result.optionalText("error")),
+                        error = if (ok) error else result.optionalText("error")) }
+                } else {
+                    check(result.bool("ok")) { "The Mac did not acknowledge this control. Check the exact target; nothing was resent." }
+                    change { copy(workspace = workspace.acknowledge(command, result.text("commandID", 256, true), result.text("status", 64, true))) }
+                }
                 acknowledged = true
             }
+        } catch (error: Exception) {
+            if (error is RemoteRequestFailure && error.notDispatched && command.isPolicy && command.enabled == false &&
+                generation == connectionGeneration) {
+                change { copy(workspace = workspace.rejectPolicyBeforeDispatch(command, error.message.orEmpty())) }
+                acknowledged = true
+            }
+            if (error is CancellationException || !command.isPolicy ||
+                state.value.workspace.policyDeliveries[command.target]?.commandID == command.id) throw error
+            acknowledged = true
         } finally {
             if (!acknowledged) change { copy(workspace = workspace.uncertain(command)) }
         }
