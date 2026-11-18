@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 data class Capabilities(val steering: Boolean, val subagentChat: Boolean, val subagentStop: Boolean,
     val dangerousAutoYes: Boolean = false, val subagentCreate: Boolean = false,
-    val subagentRemove: Boolean = false, val subagentCleanup: Boolean = false)
+    val subagentRemove: Boolean = false, val subagentCleanup: Boolean = false, val steeringImmediate: Boolean = false)
 data class SubagentCreation(val name: String = "", val agentType: String = "", val prompt: String = "", val model: String? = null) {
     fun withinLimits() = name.length <= 160 && agentType.length <= 128 && prompt.length <= 16_000 &&
         (model == null || model.length <= 200)
@@ -53,6 +53,7 @@ data class ControlCommand(val id: String, val sessionID: String, val ticket: Str
     val targetID: String? = null, val targetTicket: String? = null, val sourceID: String? = null,
     val resumeAuthority: ResumeAuthority? = null, val draftRevision: String? = null) {
     val isPolicy get() = action == "dangerous_auto_yes"
+    val requiresConfirmation get() = action !in setOf("send", "queue")
     val isManagement get() = action in setOf("create_subagent", "remove_subagent", "stop_idle_subagents")
     val isSessionAction get() = action in sessionActionStatuses
     val sessionActionKey get() = "$sourceID\u0000$action"
@@ -147,9 +148,14 @@ data class WorkspaceState(
             val agent = detail!!.agents.singleOrNull { it.id == agentID }
             if (agent == null || agent.status !in setOf("running", "idle")) return "This subagent is unavailable or ended. Nothing will be sent to main."
             if (action == "interrupt") return "Interrupt is only supported for the main agent."
+            if (action == "send") return "This main-agent control cannot target a helper. Select the helper again before sending."
             if (!(if (action == "stop") s.capabilities.subagentStop else s.capabilities.subagentChat))
                 return "This connection does not support that subagent control. Check its Notify extension on Mac."
-        } else if (!s.capabilities.steering) return "Main controls are unavailable. Check this session’s Notify extension on Mac."
+        } else {
+            if (!s.capabilities.steering) return "Main controls are unavailable. Check this session’s Notify extension on Mac."
+            if (action == "send" && !s.capabilities.steeringImmediate)
+                return "Send is unavailable. Update the Mac/helper and reload this session’s Notify extension. Queue is still available."
+        }
         return null
     }
     fun policyUnavailable(now: Long, enabling: Boolean): String? {
@@ -172,7 +178,7 @@ data class WorkspaceState(
             "", "", enabled, session!!.dangerousAutoYes!!.ticket, session!!.dangerousAutoYes!!.offTicket)
     }
     fun prepare(action: String, now: Long): ControlCommand {
-        require(action in setOf("queue", "interrupt", "stop"))
+        require(action in setOf("send", "queue", "interrupt", "stop"))
         check(unavailable(action, now) == null) { unavailable(action, now)!! }
         require(action == "stop" || draft.isNotBlank()) { "Write a message for this agent." }
         return ControlCommand(UUID.randomUUID().toString(), sessionID!!, session!!.ticket, action,
@@ -274,7 +280,9 @@ data class WorkspaceState(
         require(deliveries[command.target]?.commandID == command.id && commandID.isNotBlank() && commandID.length <= 128) {
             "Acknowledgment does not match a pending command. Check your Mac."
         }
-        require(status in setOf("queued", "received", "stopped")) { "The Mac did not confirm this control." }
+        require(if (command.action == "send") status in setOf("submitted", "received") else status in setOf("queued", "received", "stopped")) {
+            "The Mac did not confirm this control."
+        }
         // RPC UUID correlation is enforced by RemoteConnection; the Mac creates a distinct receipt UUID.
         return copy(deliveries = deliveries + (command.target to ControlDelivery(command.id, status, false, commandID)),
             drafts = if (command.action != "stop" && drafts[command.draftTarget]?.text == command.text &&

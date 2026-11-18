@@ -24,7 +24,7 @@ and access to the compatible Notify internet service.
 For updates, install the new APK over Notify without uninstalling or clearing its
 data. Updates must use the same signing identity to retain the saved pairing.
 
-**Current prerelease:** **[0.3.1 beta](https://github.com/vsvinav/notify-android/releases/tag/v0.3.1-beta.1)**.
+**Current prerelease:** **[0.3.3 beta](https://github.com/vsvinav/notify-android/releases/tag/v0.3.3-beta.1)**.
 The release includes the installable APK and its SHA-256 checksum, QR scanning,
 reconnect improvements, Mac-style agents, the matching amber lightning icon and
 the controls below. This is an agent-tested preview, not full physical-device
@@ -36,6 +36,68 @@ reconnection or uncertain delivery. With Mac beta 5/build 11, background alerts
 no longer depend on an open phone conversation. An installed-build, real-internet
 locked-phone check confirmed notification delivery and physical vibration.
 This is bounded acceptance, not a guarantee of delivery on every device/network.
+
+### 0.3.3 (code 6): offline reading and immediate Send
+
+This update adds encrypted, phone-local conversation reading after a
+disconnect or app restart. **Read saved conversations · offline** is available
+from the sign-in screen without a new service login; it does not sign you in or
+restore a Mac connection. The original passkey sign-in path remains available.
+
+Connected conversations retain all history supplied by the Mac (which can itself
+be partial). Only the latest **8 messages per main/helper conversation** are
+saved, with a maximum of **32 conversations / 4 MiB** of encoded display data;
+least recently refreshed conversations are evicted to fit. Cached views show
+their save time and are labeled stale, bounded and read-only. Reconnection uses
+fresh Mac content instead of merging or replaying cached messages.
+Saved instruction attempts retain their reported delivery label, including
+unknown or failed, rather than implying the Mac acknowledged them.
+
+The cache contains display text, names, timestamps and target IDs, scoped to the
+saved account, pinned Mac and phone pairing. It contains no request/approval
+objects, tickets, capabilities, credentials or command ledgers. It uses
+AndroidKeyStore AES-GCM and atomic app-private no-backup files, with no plaintext
+fallback. Storage or key failures are reported in the app. **Sign out**, **Forget
+this phone’s pairing**, and explicit cache clearing erase saved history;
+disconnecting and restarting do not. Clearing while connected permits subsequent
+fresh Mac updates to be saved again. Anyone able to open the unlocked app can read
+its saved conversations; service sign-in is not a local app lock.
+Sign-out attempts local notification opt-out, cache erasure, routing removal and
+service logout independently; failures are reported with recovery instructions.
+Failed routing removal remains pending rather than being presented as completed.
+
+Model responses gain native headings, lists, bold/italic/inline code and distinct
+fenced code blocks with **Copy code**. Code copy preserves the fence's contents,
+including whitespace and line endings; **Copy text** still copies the original
+complete message source. Other syntax stays readable as text. Oversized or highly
+fragmented Markdown falls back to literal source. No WebView, executable HTML,
+remote images, link fetches or new Markdown dependency is used.
+
+Main-agent **Send** now steers before the next model
+request, without interrupting the current turn, when both the session extension
+and Mac/helper advertise immediate steering support. **Queue draft** remains in
+Session actions; **Interrupt** and **Stop** remain separate confirmed controls.
+Older connections show **Queue** with update/reload guidance instead of promising
+immediate Send. Update Mac Notify and reload its extension in each existing
+Copilot terminal to enable this feature. Helper **Send** still addresses only
+the selected supported helper.
+**Submitted** means accepted but not yet consumed; only a matching runtime user
+message makes the receipt **received**, which may already be reported in the
+control response if consumption precedes the SDK acknowledgment.
+Saved attempts retain these status labels,
+and uncertain deliveries are never retried automatically.
+
+The steering changes passed 181 JVM tests and both lints. Three isolated native
+phone checks passed for supported Send placement, legacy Queue guidance and
+editable composer state during busy/uncertain delivery. The exact signed APK was
+installed in place with pairing retained. These checks do not send real agent
+instructions or establish physical keyboard typing/deletion. Before this update, the
+history/Markdown milestone passed 174 JVM tests and four isolated
+physical-phone tests covering encrypted storage/tampering/clear, exact code copy
+and the read-only reader, including narrow enlarged-text layout. The signed
+candidate was installed in place. Physical keyboard typing, the full production
+disconnect/restart flow and TalkBack remain unverified; these checks are not a
+claim of complete device acceptance.
 
 ## Native screenshots
 
@@ -54,6 +116,13 @@ Eleven native layout checks passed, including narrow 320dp / 130% text cases,
 light/dark appearance, creation, session settings and visible policy actions.
 TalkBack, keyboard interaction, camera and live control execution are separate
 acceptance checks; these captures do not establish them.
+
+The reader adds native Markdown/code copying and a read-only offline
+conversation view. These phone captures use isolated fictional text and a
+synthetic saved timestamp, not a production conversation or connection.
+
+<img src="docs/images/android-markdown-native.png" alt="Fictional native Markdown and exact code-copy fixture" width="300">
+<img src="docs/images/android-offline-native.png" alt="Fictional saved conversation explicitly marked cached, stale and read-only, with no composer" width="300">
 
 <details>
 <summary>Earlier browser design previews</summary>
@@ -171,7 +240,8 @@ Connection refreshes no longer discard drafts. The editor remains usable while
 disconnected, sending, or awaiting an uncertain result; Send still requires a
 fresh supported target and a safe delivery state. An acknowledgment clears only
 the exact draft revision sent, never text you edited afterward. Drafts are not
-stored across app restarts, and this release does not add offline history storage.
+stored across app restarts. Published 0.3.1 does not store offline history; the
+unreleased 0.3.2 candidate adds the bounded reader described above.
 Changing filters never selects a different session.
 
 ### Session settings (0.3.0 beta)

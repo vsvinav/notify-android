@@ -5,6 +5,102 @@ import org.junit.Test
 import org.json.JSONObject
 
 class WorkspaceTest {
+    private fun immediateWorkspace(): WorkspaceState {
+        val snapshot = Snapshots.workspace(JSONObject("""{"connected":true,"steeringImmediateControl":true,"sessions":[{"id":"s","name":"Build","project":"","agent":"copilot","state":"working","connected":true,"ticket":"t","capabilities":{"steering":true,"steeringImmediate":true,"subagentChat":true,"subagentStop":true}}],"detail":{"sessionID":"s","ticket":"t","team":{"agents":[{"id":"child","name":"Helper","status":"running"}]},"activity":[],"controls":[]}}"""))
+        return WorkspaceState(sessionID = "s").receive(snapshot, 100).edit("  steer now\n")
+    }
+
+    @Test fun mainSendUsesExactInstructionWhileExplicitQueueAndHelperRoutingRemainAvailable() {
+        val state = immediateWorkspace()
+        val send = state.prepare("send", 101)
+        assertEquals("send", send.json().getString("action"))
+        assertFalse(send.json().has("agentID"))
+        assertFalse(send.requiresConfirmation)
+        assertEquals("  steer now\n", send.text)
+        state.validate(send, 101)
+        assertEquals("queue", state.prepare("queue", 101).action)
+        assertFalse(state.prepare("queue", 101).requiresConfirmation)
+        assertTrue(state.prepare("interrupt", 101).requiresConfirmation)
+        assertTrue(state.prepare("stop", 101).requiresConfirmation)
+        assertEquals("queue", workspace().select("s").edit("legacy").prepare("queue", 101).action)
+        assertNotNull(workspace().select("s").unavailable("send", 101))
+        val child = state.select("s", "child").edit("exact helper")
+        val queued = child.prepare("queue", 101)
+        assertEquals("child", queued.json().getString("agentID"))
+        assertThrows(IllegalStateException::class.java) { child.prepare("send", 101) }
+        assertThrows(IllegalStateException::class.java) { child.validate(queued.copy(action = "send"), 101) }
+    }
+
+    @Test fun sendValidationRetainsFreshnessAuthorityCapabilityAndDraftGuards() {
+        val state = immediateWorkspace()
+        val command = state.prepare("send", 101)
+        assertThrows(IllegalStateException::class.java) { state.validate(command, 10_100) }
+        assertThrows(IllegalStateException::class.java) { state.edit("changed").validate(command, 101) }
+        for (replacement in listOf(
+            state.session!!.copy(capabilities = Capabilities(true, true, true)),
+            state.session!!.copy(ticket = "new"),
+            state.session!!.copy(connected = false),
+            state.session!!.copy(agent = "claude"),
+        )) {
+            val updated = state.receive(state.snapshot!!.copy(sessions = listOf(replacement)), 102)
+            assertThrows(IllegalStateException::class.java) { updated.validate(command, 103) }
+            assertEquals(state.draft, updated.draft)
+        }
+        for (blocked in listOf(state.sending(command), state.sending(command).uncertain(command))) {
+            assertEquals("keep editing", blocked.edit("keep editing").draft)
+            assertThrows(IllegalStateException::class.java) { blocked.prepare("send", 102) }
+        }
+    }
+
+    @Test fun submittedAckClearsOnlyExactSentRevisionWithoutClaimingConsumption() {
+        val state = workspace().select("s").edit("hello")
+        val command = state.prepare("queue", 101).copy(action = "send")
+        val pending = state.sending(command)
+        for (invalid in listOf("queued", "stopped", "sending", "unknown", "failed"))
+            assertThrows(IllegalArgumentException::class.java) { pending.acknowledge(command, "receipt", invalid) }
+        val submitted = pending.acknowledge(command, "receipt", "submitted")
+        assertEquals("", submitted.draft)
+        assertEquals("submitted", submitted.delivery!!.status)
+        assertFalse(submitted.delivery!!.blocked)
+        for (edited in listOf(pending.edit("new"), pending.edit("").edit("hello"), pending.edit("new").edit("hello")))
+            assertEquals(edited.draft, edited.acknowledge(command, "receipt", "submitted").draft)
+        val receipt = ControlReceipt("receipt", "send", "hello", "submitted", "Awaiting next model request", "1")
+        val refreshed = submitted.receive(state.snapshot!!.copy(detail = detail.copy(controls = listOf(receipt))), 102)
+        assertTrue(refreshed.delivery!!.status.startsWith("submitted"))
+        assertFalse(refreshed.delivery!!.blocked)
+        for (status in listOf("unknown", "sending", "failed")) {
+            val updated = submitted.receive(state.snapshot.copy(detail = detail.copy(
+                controls = listOf(receipt.copy(status = status)))), 102)
+            assertEquals(status != "failed", updated.delivery!!.blocked)
+            assertTrue(updated.delivery!!.status.startsWith(status))
+        }
+        assertEquals("received", refreshed.receive(state.snapshot.copy(detail = detail.copy(
+            controls = listOf(receipt.copy(status = "received", detail = "")))), 103).delivery!!.status)
+        assertThrows(IllegalArgumentException::class.java) { pending.acknowledge(command.copy(id = "wrong"), "receipt", "submitted") }
+    }
+
+    @Test fun earlyRuntimeReceivedResponseRetainsConsumptionAndExactDraftRevisionGuards() {
+        val state = immediateWorkspace()
+        val command = state.prepare("send", 101)
+        val pending = state.sending(command)
+        val received = pending.acknowledge(command, "runtime-receipt", "received")
+        assertEquals("received", received.delivery!!.status)
+        assertEquals("runtime-receipt", received.delivery!!.receiptID)
+        assertFalse(received.delivery!!.blocked)
+        assertEquals("", received.draft)
+        for (edited in listOf(pending.edit("new"), pending.edit("").edit(command.text),
+            pending.edit("new").edit(command.text))) {
+            val result = edited.acknowledge(command, "runtime-receipt", "received")
+            assertEquals(edited.draft, result.draft)
+            assertEquals("received", result.delivery!!.status)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            pending.acknowledge(command.copy(id = "wrong"), "runtime-receipt", "received")
+        }
+        for (invalid in listOf("queued", "stopped"))
+            assertThrows(IllegalArgumentException::class.java) { pending.acknowledge(command, "runtime-receipt", invalid) }
+    }
+
     @Test fun legacySteeringMustNotPretendToSupportSubagentManagement() {
         val state = workspace().select("s")
         for (action in listOf("create_subagent", "remove_subagent", "stop_idle_subagents"))

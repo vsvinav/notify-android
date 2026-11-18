@@ -15,6 +15,7 @@ import app.notify.android.notifications.NotificationSettings
 import app.notify.android.notifications.NotificationState
 import app.notify.android.remote.*
 import java.io.IOException
+import java.io.File
 import java.security.GeneralSecurityException
 import java.security.ProviderException
 import kotlinx.coroutines.*
@@ -38,7 +39,16 @@ data class ControllerState(
     val notificationPermissionPending: Boolean = false,
     val connectionTrace: TraceSnapshot = TraceSnapshot(),
     val appearance: PhoneAppearance = PhoneAppearance.System,
+    val savedHistory: ConversationHistory = ConversationHistory(),
+    val savedScope: ConversationScope? = null,
+    val offlineReader: Boolean = false,
+    val cacheError: String? = null,
 ) {
+    val visibleSavedHistory get() = savedHistory.takeIf {
+        relationship != null && savedScope == ConversationScope.from(relationship) &&
+            (account == null || account == relationship.account)
+    } ?: ConversationHistory()
+    fun clearSavedHistory() = copy(savedHistory = ConversationHistory(), savedScope = null, offlineReader = false)
     fun reconnectable(): Relationship? = relationship?.takeIf { foreground && it.enrolled && it.account == account }
     fun shouldOfferNotificationSetup() = status.state == "connected" && reconnectable() != null &&
         !notifications.setupOffered && !notifications.enabled && !notifications.cleanupPending
@@ -52,7 +62,8 @@ data class ControllerState(
     }
     fun receiveWorkspace(snapshot: WorkspaceSnapshot, receivedAt: Long): ControllerState {
         val updated = workspace.receive(snapshot, receivedAt)
-        return copy(now = receivedAt, workspace = updated, controlReview = controlReview?.takeIf {
+        return copy(now = receivedAt, workspace = updated, offlineReader = offlineReader && !snapshot.connected,
+            controlReview = controlReview?.takeIf {
             if (it.isPolicy) updated.sessionID == it.sessionID && updated.session?.ticket == it.ticket &&
                 it.agentID.isEmpty() && updated.select(updated.sessionID).policyUnavailable(receivedAt, it.enabled == true) == null &&
                 updated.session?.dangerousAutoYes?.ticket == it.policyTicket
@@ -82,6 +93,10 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     private val appearancePrefs = application.getSharedPreferences("notify-appearance-v1", Application.MODE_PRIVATE)
     private val appearancePreference = AppearancePreference({ appearancePrefs.getString("mode", null) },
         { appearancePrefs.edit().putString("mode", it).commit() })
+    private val conversationCache = ConversationCacheStore(
+        EncryptedConversationStorage(File(application.noBackupFilesDir, "conversations-v1.enc")))
+    private var conversationLease: ConversationLease? = null
+    private var clearingConversations = false
     private val store = RelationshipStore(object : RelationshipStorage {
         override fun read() = prefs.getString("relationship", null)
         override fun write(value: String?) {
@@ -121,11 +136,58 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         operation {
             val saved = withContext(Dispatchers.IO) { store.read() }
             change { copy(relationship = saved) }
+            if (saved != null) restoreConversations(saved)
             refreshNotifications()
         }
     }
     private fun change(block: ControllerState.() -> ControllerState) { mutable.value = mutable.value.block() }
     fun clearError() = change { copy(error = null) }
+    fun readSavedConversations(open: Boolean) = change {
+        copy(offlineReader = open && visibleSavedHistory.conversations.isNotEmpty(), review = null, controlReview = null)
+    }
+    fun retrySavedConversations() = operation {
+        state.value.relationship?.let { restoreConversations(it) }
+    }
+    fun clearSavedConversations() = operation { eraseConversations() }
+    private suspend fun restoreConversations(record: Relationship) {
+        val lease = conversationCache.open(ConversationScope.from(record))
+        conversationLease = lease
+        try {
+            val restored = withContext(Dispatchers.IO) { conversationCache.restore(lease) }
+            if (conversationCache.current(lease)) change {
+                copy(savedScope = lease.scope, savedHistory = restored, cacheError = null)
+            }
+        } catch (error: ConversationCacheException) {
+            change { clearSavedHistory().copy(cacheError = error.message) }
+        }
+    }
+    private suspend fun saveConversations(snapshot: WorkspaceSnapshot) {
+        val record = state.value.relationship ?: return
+        if (clearingConversations || state.value.account != record.account || !snapshot.connected || snapshot.detail == null) return
+        val lease = conversationLease ?: conversationCache.open(ConversationScope.from(record)).also { conversationLease = it }
+        if (lease.scope != ConversationScope.from(record)) return
+        // A transient disconnect must not cancel an in-flight local save. Revocation still fences it.
+        withContext(NonCancellable) {
+            try {
+                val saved = withContext(Dispatchers.IO) { conversationCache.save(lease, snapshot, System.currentTimeMillis()) }
+                if (saved != null && conversationCache.current(lease)) change {
+                    copy(savedScope = lease.scope, savedHistory = saved, cacheError = null)
+                }
+            } catch (error: ConversationCacheException) {
+                if (conversationCache.current(lease)) change { copy(cacheError = error.message) }
+            }
+        }
+    }
+    private suspend fun eraseConversations() {
+        clearingConversations = true
+        conversationCache.revoke()
+        conversationLease = null
+        change { clearSavedHistory() }
+        try {
+            withContext(NonCancellable + Dispatchers.IO) { conversationCache.clear() }
+            change { copy(cacheError = null) }
+        } finally { clearingConversations = false }
+    }
     fun appearance(value: PhoneAppearance) = local {
         appearancePreference.set(value)
         change { copy(appearance = appearancePreference.current) }
@@ -162,6 +224,10 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         cancelNotificationPermission()
         disconnect()
         val account = PasskeyAccount(service).authenticate(activity, register, name)
+        if (state.value.relationship?.account != account) {
+            eraseConversations()
+            change { copy(workspace = WorkspaceState(), inbox = RequestInbox()) }
+        }
         change { copy(account = account, status = RemoteStatus("disconnected", "Signed in. Mac trust is separate; connect or pair below.")) }
         refreshNotifications()
         if (state.value.notifications.consent && state.value.relationship?.account != account) {
@@ -176,10 +242,19 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     }
     fun signOut() = operation {
         cancelNotificationPermission()
-        removeNotifications()
         disconnect()
-        service.postScoped("/v1/account/logout", JSONObject())
-        change { endAccountSession() }
+        val failures = signOutCleanup(
+            disableNotificationsLocally = ::disableNotificationsLocally,
+            eraseConversations = ::eraseConversations,
+            removeNotificationRouting = ::removeNotificationRouting,
+            logout = { service.postScoped("/v1/account/logout", JSONObject()); Unit },
+            endSession = { disconnect(); change { endAccountSession() } },
+        )
+        change {
+            copy(cacheError = failures.firstOrNull { it.first == SignOutStep.Cache }?.first?.recovery,
+                error = failures.filterNot { it.first == SignOutStep.Cache }
+                    .joinToString("\n\n") { it.first.recovery }.ifEmpty { null })
+        }
     }
     private suspend fun verifyAccount(fresh: Boolean = false): Account {
         val session = service.postScoped("/v1/account/session", JSONObject())
@@ -191,6 +266,7 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     fun pair(link: String, name: String) = operation {
         val setup = PairingLink.parse(link, service.origin)
         val account = verifyAccount(fresh = true)
+        if (state.value.relationship == null) eraseConversations()
         val record = withContext(Dispatchers.IO) { store.create(account, setup, name.trim()) }
         change { copy(relationship = record) }
         val pending = service.postScoped("/v1/remote/pair", JSONObject().put("setupID", setup.setupID)
@@ -236,6 +312,8 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     }
     fun forget() = operation {
         cancelNotificationPermission()
+        disconnect()
+        eraseConversations()
         removeNotifications()
         disconnect()
         withContext(Dispatchers.IO) { store.forget() }
@@ -321,9 +399,15 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     }
     fun disableNotifications() = operation { cancelNotificationPermission(); removeNotifications() }
     private suspend fun removeNotifications() {
-        notificationSettings.disableLocally()
-        refreshNotifications()
-        if (!state.value.notifications.cleanupPending) return
+        disableNotificationsLocally()
+        removeNotificationRouting()
+    }
+    private fun disableNotificationsLocally() {
+        try { notificationSettings.disableLocally() } finally { refreshNotifications() }
+    }
+    private suspend fun removeNotificationRouting() {
+        val notifications = state.value.notifications
+        if (!notifications.cleanupPending && !notifications.consent && !notifications.registered) return
         val record = checkNotNull(state.value.relationship) { "Notifications are off locally. Revoke this phone on your Mac to remove routing." }
         check(verifyAccount() == record.account) { "Sign in to the paired account to remove notification routing." }
         try {
@@ -362,6 +446,7 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
                     if (generation != connectionGeneration || inboxGeneration != state.value.inbox.generation ||
                         selected != state.value.workspace.sessionID) return@guarded
                     change { receiveWorkspace(snapshot, SystemClock.elapsedRealtime()) }
+                    saveConversations(snapshot)
                 }
                 delay(2000)
             }
@@ -413,7 +498,7 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     fun prepareControl(action: String) = local {
         check(state.value.live) { "Wait for a fresh Mac update." }
         val command = state.value.workspace.prepare(action, SystemClock.elapsedRealtime())
-        if (action == "queue") sendControl(command) else change { copy(controlReview = command) }
+        if (!command.requiresConfirmation) sendControl(command) else change { copy(controlReview = command) }
     }
     fun confirmControl() { state.value.controlReview?.let(::sendControl) }
     fun prepareSessionAction(action: String, rgb: Int? = null, target: String? = null) = local {
@@ -505,6 +590,7 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     private suspend fun guarded(block: suspend () -> Unit) {
         try { block() }
         catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: ConversationCacheException) { change { copy(cacheError = error.message) } }
         catch (_: GetCredentialCancellationException) { change { copy(error = "Passkey sign-in cancelled. Nothing changed.") } }
         catch (_: CreateCredentialCancellationException) { change { copy(error = "Passkey creation cancelled. Nothing changed.") } }
         catch (error: GetCredentialException) { change { copy(error = "Passkey sign-in unavailable: ${error.message}. Check your credential provider and try again.") } }

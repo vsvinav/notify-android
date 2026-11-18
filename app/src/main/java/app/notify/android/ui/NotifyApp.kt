@@ -100,6 +100,7 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
             state.notices != null -> controller.closeNotices()
             state.review != null || state.controlReview != null -> controller.cancelReview()
             route == ControllerRoute.Notifications -> controller.finishNotificationSetup()
+            route == ControllerRoute.Offline -> controller.readSavedConversations(false)
             destination == Destination.Settings && settingsSection != SettingsSection.Overview -> {
                 settingsSection = settingsParent
                 settingsParent = SettingsSection.Overview
@@ -107,13 +108,14 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
             else -> destination = Destination.Chat
         }
     }
-    val canGoBack = state.notices != null || route == ControllerRoute.Notifications || destination != Destination.Chat
+    val canGoBack = state.notices != null || route in setOf(ControllerRoute.Notifications, ControllerRoute.Offline) || destination != Destination.Chat
     NotifyTheme(state.appearance) {
         BackHandler(canGoBack || state.review != null || state.controlReview != null, back)
         val title = when {
             state.notices != null -> "Third-party notices"
             route == ControllerRoute.Notifications -> "Notifications"
             destination == Destination.Settings -> settingsSection.title
+            route == ControllerRoute.Offline -> "Saved conversations"
             route == ControllerRoute.Pairing -> "Connect your Mac"
             route == ControllerRoute.SignIn -> "Sign in"
             route == ControllerRoute.Trust -> "Mac approval"
@@ -121,9 +123,10 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
             else -> state.workspace.session?.name ?: if (state.workspace.sessionID == null) "Notify" else "Session unavailable"
         }
         ChatShell(state, destination, title, canGoBack, back,
-            onNavigate = { destination = it; settingsSection = SettingsSection.Overview; settingsParent = SettingsSection.Overview },
-            onSession = { controller.selectSession(it); destination = Destination.Chat },
+            onNavigate = { controller.readSavedConversations(false); destination = it; settingsSection = SettingsSection.Overview; settingsParent = SettingsSection.Overview },
+            onSession = { controller.readSavedConversations(false); controller.selectSession(it); destination = Destination.Chat },
             onConnection = {
+                controller.readSavedConversations(false)
                 if (route == ControllerRoute.Notifications) controller.finishNotificationSetup()
                 destination = Destination.Settings
                 settingsSection = SettingsSection.Connection
@@ -142,11 +145,28 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
                         }
                     }
                 }
+                state.cacheError?.let { error ->
+                    Surface(color = MaterialTheme.colorScheme.errorContainer) {
+                        Column(Modifier.fillMaxWidth().heightIn(max = 160.dp).verticalScroll(rememberScrollState()).padding(16.dp)) {
+                            Text(error, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                            TextButton(onClick = controller::retrySavedConversations, enabled = !state.busy) { Text("Retry saved history") }
+                            TextButton(onClick = controller::clearSavedConversations, enabled = !state.busy) { Text("Clear saved history") }
+                        }
+                    }
+                }
+                if (state.visibleSavedHistory.conversations.isNotEmpty() && route != ControllerRoute.Offline &&
+                    (state.status.state != "connected" || state.workspace.receivedAt == null)) {
+                    TextButton(onClick = { destination = Destination.Chat; controller.readSavedConversations(true) },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Read saved conversations · offline") }
+                }
                 when {
                     state.notices != null -> Notices(state.notices!!, controller::closeNotices)
                     route == ControllerRoute.Notifications -> NotificationSetup(state, controller, enableAlerts)
                     destination == Destination.Settings -> Settings(state, controller, activity, enableAlerts,
                         settingsSection, { settingsParent = settingsSection; settingsSection = it })
+                    route == ControllerRoute.Offline -> SavedConversations(state.visibleSavedHistory) {
+                        controller.readSavedConversations(false)
+                    }
                     route == ControllerRoute.Pairing -> PairingSetup(state, controller, activity)
                     route == ControllerRoute.SignIn -> SignIn(state, controller, activity)
                     route == ControllerRoute.Trust -> ConnectionSetup(state, controller)
@@ -537,8 +557,9 @@ private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
             val scrollLayout = composerHeight == null
             val presentation = targetPresentation(state)
             val targetName = presentation.name
+            val primaryAction = composerAction(workspace)
             val unavailable = if (!state.live) "Waiting for fresh Mac updates. Your draft stays here; nothing will be sent."
-                else workspace.unavailable("queue", state.now)
+                else workspace.unavailable(primaryAction.action, state.now)
             Column(Modifier.fillMaxSize().then(if (scrollLayout) Modifier.verticalScroll(rememberScrollState()) else Modifier)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHighest) {
@@ -557,6 +578,14 @@ private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
                             DropdownMenuItem(text = { Text(if (tools) "Show conversation" else "Tools & thinking") },
                                 onClick = { tools = !tools; showHistory = true; actions = false })
                             DropdownMenuItem(text = { Text("Open sessions") }, onClick = { actions = false; openSessions() })
+                            if (workspace.agentID.isEmpty() && primaryAction.action == "send") DropdownMenuItem(text = {
+                                Column {
+                                    Text("Queue draft")
+                                    Text("Wait until the current turn finishes.", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }, onClick = { actions = false; controller.prepareControl("queue") },
+                                enabled = state.live && !state.busy && workspace.draft.isNotBlank() &&
+                                    workspace.unavailable("queue", state.now) == null)
                             if (workspace.agentID.isEmpty()) DropdownMenuItem(text = {
                                 Column {
                                     Text("Interrupt main with draft")
@@ -586,7 +615,7 @@ private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
                             TextButton(onClick = openSessions) { Text("Open sessions") }
                         }
                     } else key(target) {
-                        Conversation(workspace, position, tools,
+                        Conversation(state, position, tools,
                             (if (scrollLayout) Modifier.height(180.dp * fontScale) else Modifier.weight(1f)).padding(horizontal = 20.dp))
                     }
                 }
@@ -597,6 +626,9 @@ private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
                     Column(if (scrollLayout) Modifier else Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (workspace.agentID.isNotEmpty()) TextButton(onClick = openAgents) { Text("Change agent") }
+                        if (workspace.agentID.isEmpty() && primaryAction.action == "queue") Text(
+                            "Queue waits for the current turn. For Send, update the Mac/helper and reload this session’s Notify extension.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         workspace.delivery?.let { Supporting(it.status) }
                         if (unavailable != null) Text(unavailable, style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -610,7 +642,9 @@ private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
                         verticalAlignment = Alignment.CenterVertically) {
                         Text("Enter adds a new line", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Action("Send", !state.busy && unavailable == null && workspace.draft.isNotBlank()) { controller.prepareControl("queue") }
+                        Action(primaryAction.label, !state.busy && unavailable == null && workspace.draft.isNotBlank()) {
+                            controller.prepareControl(primaryAction.action)
+                        }
                     }
                 }
             }
@@ -619,15 +653,16 @@ private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
 }
 
 @Composable
-private fun Conversation(workspace: WorkspaceState, position: FeedPosition, tools: Boolean, modifier: Modifier) {
+private fun Conversation(state: ControllerState, position: FeedPosition, tools: Boolean, modifier: Modifier) {
+    val workspace = state.workspace
     val detail = workspace.detail!!
     val activity = detail.activity.filter { it.agentID == workspace.agentID }
-    val messages = activity.filter { it.kind in setOf("user", "assistant") }.map { it.copy(id = "activity:${it.id}") }.toMutableList()
-    for (receipt in detail.controls.filter { it.agentID == workspace.agentID && it.action in setOf("queue", "interrupt") }) {
-        if (messages.none { it.clientTurnID == receipt.id }) messages.add(Activity("receipt:${receipt.id}", "user",
-            "Your message · ${receipt.status}", receipt.message, receipt.timestamp, receipt.agentID))
-    }
-    val feed = if (tools) activity.filter { it.kind !in setOf("user", "assistant") } else messages.sortedBy { it.timestamp }
+    val fresh = state.status.state == "connected" && workspace.receivedAt != null && workspace.snapshot?.connected == true
+    val cached = state.visibleSavedHistory.conversations.singleOrNull { it.target == workspace.draftTarget }
+    val feed = if (!fresh) cached?.messages.orEmpty().mapIndexed { index, message ->
+        Activity("cached:$index", message.role, message.title, message.text, message.timestamp, workspace.agentID)
+    } else if (tools) activity.filter { it.kind !in setOf("user", "assistant") }
+    else conversationMessages(detail, workspace.agentID)
     val scope = rememberCoroutineScope()
     LaunchedEffect(position) {
         snapshotFlow { position.list.isScrollInProgress }.collect { scrolling ->
@@ -638,10 +673,14 @@ private fun Conversation(workspace: WorkspaceState, position: FeedPosition, tool
         if (!tools && position.following && !position.list.isScrollInProgress && feed.isNotEmpty()) position.list.scrollToItem(feed.lastIndex)
     }
     Column(modifier) {
-        if (detail.truncated) Supporting("Recent reported history only. Earlier entries are on your Mac.")
+        if (!fresh) {
+            Supporting("Cached · read-only · stale. Latest 8 supplied messages only; history may be partial. Reconnect for fresh content.")
+            if (cached != null) Supporting(savedConversationLabel(cached))
+        } else if (detail.truncated) Supporting("Recent reported history only. Earlier entries are on your Mac.")
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = if (tools) androidx.compose.foundation.lazy.rememberLazyListState() else position.list,
             verticalArrangement = Arrangement.spacedBy(20.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
-            if (feed.isEmpty()) item { Supporting(if (tools) "No tool or thinking updates reported." else "No conversation reported for this agent yet.") }
+            if (feed.isEmpty()) item { Supporting(if (!fresh) "No saved conversation for this exact target."
+                else if (tools) "No tool or thinking updates reported." else "No conversation reported for this agent yet.") }
             items(feed, key = { it.id }) { message ->
                 Surface(
                     color = if (message.kind == "user") MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surface,
@@ -651,7 +690,8 @@ private fun Conversation(workspace: WorkspaceState, position: FeedPosition, tool
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("${if (message.kind == "user") "You" else if (message.kind == "assistant") workspace.session?.agent ?: "Assistant" else message.kind} · ${message.title}",
                             style = MaterialTheme.typography.labelLarge)
-                        SelectionContainer { Text(message.detail, fontFamily = if (tools) FontFamily.Monospace else FontFamily.Default) }
+                        if (message.kind == "assistant") MessageMarkdown(message.detail)
+                        else SelectionContainer { Text(message.detail, fontFamily = if (tools && fresh) FontFamily.Monospace else FontFamily.Default) }
                         CopyButton(message.detail)
                     }
                 }
@@ -663,11 +703,11 @@ private fun Conversation(workspace: WorkspaceState, position: FeedPosition, tool
         }) { Text("Jump to latest") }
     }
 }
-@Composable internal fun CopyButton(value: String) {
+@Composable internal fun CopyButton(value: String, label: String = "Copy text") {
     val clipboard = LocalClipboardManager.current
     var copied by remember(value) { mutableStateOf(false) }
     TextButton(onClick = { clipboard.setText(AnnotatedString(value)); copied = true }, modifier = Modifier.heightIn(min = 48.dp)) {
-        Text(if (copied) "Copied" else "Copy text")
+        Text(if (copied) "Copied" else label)
     }
 }
 

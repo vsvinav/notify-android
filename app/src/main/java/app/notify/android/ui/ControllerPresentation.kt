@@ -1,8 +1,16 @@
 package app.notify.android.ui
 
 import app.notify.android.controller.ControllerState
+import app.notify.android.controller.WorkspaceState
 
-internal enum class ControllerRoute { Pairing, SignIn, Trust, Notifications, Chat }
+internal enum class ControllerRoute { Pairing, SignIn, Trust, Notifications, Chat, Offline }
+
+internal data class ComposerAction(val action: String, val label: String)
+internal fun composerAction(workspace: WorkspaceState) = when {
+    workspace.agentID.isNotEmpty() -> ComposerAction("queue", "Send")
+    workspace.session?.capabilities?.steeringImmediate == true -> ComposerAction("send", "Send")
+    else -> ComposerAction("queue", "Queue")
+}
 
 internal fun composerHeightLimit(availableHeightDp: Float, fontScale: Float): Float? {
     val limit = availableHeightDp * if (availableHeightDp < 420f || fontScale > 1.3f) .55f else .45f
@@ -18,6 +26,7 @@ internal fun drawerKeepsPinnedChrome(availableHeightDp: Float, fontScale: Float)
 
 internal fun controllerRoute(state: ControllerState): ControllerRoute = when {
     state.relationship == null -> ControllerRoute.Pairing
+    state.offlineReader && state.visibleSavedHistory.conversations.isNotEmpty() -> ControllerRoute.Offline
     state.account == null || state.account != state.relationship.account -> ControllerRoute.SignIn
     // Every handshake reports pending; authenticated history must not be replaced by setup.
     !state.relationship.enrolled || state.status.state == "pending" && state.workspace.snapshot == null -> ControllerRoute.Trust

@@ -7,6 +7,31 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ControllerPresentationTest {
+    @Test fun primaryComposerUsesSendOnlyForCapableMainAndKeepsHelpersExact() {
+        val main = connected().workspace
+        assertEquals(ComposerAction("queue", "Queue"), composerAction(main))
+        val capable = main.receive(snapshot.copy(sessions = listOf(session.copy(
+            capabilities = session.capabilities.copy(steeringImmediate = true)))), 101)
+        assertEquals(ComposerAction("send", "Send"), composerAction(capable))
+        for (root in listOf(main, capable)) {
+            val helper = root.select("s", "helper")
+            assertEquals(ComposerAction("queue", "Send"), composerAction(helper))
+            assertEquals("helper", helper.agentID)
+        }
+        assertEquals(ComposerAction("queue", "Queue"), composerAction(capable.receive(snapshot, 102)))
+    }
+
+    @Test fun savedReaderIsExplicitAndReachableWithoutServiceSignIn() {
+        val history = ConversationHistory(listOf(CachedConversation(DraftTarget("s", ""), "Build", "Main",
+            1, false, listOf(CachedMessage("assistant", "", "Saved reply", "1")))))
+        val state = ControllerState(relationship = relationship, savedScope = ConversationScope.from(relationship),
+            savedHistory = history)
+        assertEquals(ControllerRoute.SignIn, controllerRoute(state))
+        assertEquals("Offline", controllerRoute(state.copy(offlineReader = true)).name)
+        assertEquals("Disconnected", connectionLabel(state.copy(offlineReader = true)))
+        assertEquals(ControllerRoute.SignIn, controllerRoute(state.copy(offlineReader = true, account = Account("issuer", "other"))))
+        assertEquals(ControllerRoute.Pairing, controllerRoute(state.copy(offlineReader = true, relationship = null)))
+    }
     @Test fun shortViewportMustScrollSurroundingsRatherThanStarveTheEditor() {
         assertNull("120dp leaves no editor after the fixed controls", composerHeightLimit(120f, 1f))
         assertNull("A positive but unusably small editor also needs fallback", composerHeightLimit(240f, 1f))
