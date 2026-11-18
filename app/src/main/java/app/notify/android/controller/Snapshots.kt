@@ -46,13 +46,23 @@ object Snapshots {
             val c = s.getJSONObject("capabilities")
             Session(s.text("id", 128, true), s.text("name", 2048), s.text("project", 2048), s.text("agent", 256),
                 s.text("state", 256), s.bool("connected"), s.text("ticket", 256),
-                Capabilities(c.bool("steering"), c.bool("subagentChat"), c.bool("subagentStop")))
+                Capabilities(c.bool("steering"), c.bool("subagentChat"), c.bool("subagentStop")),
+                s.reportedCount("runningCount"), s.reportedCount("idleCount"))
         }
         require(sessions.map { it.id }.distinct().size == sessions.size) { "Ambiguous session identifiers." }
         val detail = if (!value.has("detail") || value.isNull("detail")) null else {
             val d = value.getJSONObject("detail")
             val team = if (!d.has("team") || d.isNull("team")) null else d.getJSONObject("team")
-            val agents = team?.objects("agents", 100)?.map { Agent(it.text("id", 128, true), it.text("name", 2048), it.text("status", 64)) } ?: emptyList()
+            val agents = team?.objects("agents", 100)?.map {
+                val id = it.text("id", 128, true)
+                val known = if (!it.has("parentKnown") || it.isNull("parentKnown")) false else it.bool("parentKnown")
+                val parent = if (!it.has("parentAgentID") || it.isNull("parentAgentID")) null else it.text("parentAgentID", 128, true)
+                require(parent == null || known && parent != id) { "Invalid reported agent parent." }
+                val status = it.text("status", 64)
+                require(status in setOf("running", "idle", "completed", "failed", "cancelled")) { "Invalid reported agent status." }
+                Agent(id, it.text("name", 2048), status, it.optionalText("task", 1000),
+                    it.optionalText("model", 200), known, parent)
+            } ?: emptyList()
             require(agents.map { it.id }.distinct().size == agents.size) { "Ambiguous subagent identifiers." }
             val activity = d.objects("activity", 300).map { Activity(it.text("id", 256, true), it.text("kind", 64),
                 it.text("title", 300), it.text("detail", 65_536), it.text("timestamp", 128), it.optionalText("agentID", 128), it.optionalText("clientTurnID", 256)) }
@@ -63,6 +73,12 @@ object Snapshots {
                 d.bool("truncated", false), team?.optionalText("error") ?: "")
         }
         return WorkspaceSnapshot(value.bool("connected"), sessions, detail, value.bool("truncated", false), value.optionalText("error"))
+    }
+    private fun JSONObject.reportedCount(name: String): Int? {
+        if (!has(name)) return null
+        val count = opt(name)
+        require(count is Int && count in 0..1_000_000) { "Invalid reported agent count." }
+        return count
     }
     fun reply(command: ReplyCommand): JSONObject = JSONObject().put("sessionID", command.sessionID)
         .put("requestID", command.requestID).put("ticket", command.ticket).put("decision", command.decision)

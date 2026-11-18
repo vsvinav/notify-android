@@ -5,8 +5,10 @@ import org.json.JSONObject
 
 data class Capabilities(val steering: Boolean, val subagentChat: Boolean, val subagentStop: Boolean)
 data class Session(val id: String, val name: String, val project: String, val agent: String,
-    val state: String, val connected: Boolean, val ticket: String, val capabilities: Capabilities)
-data class Agent(val id: String, val name: String, val status: String)
+    val state: String, val connected: Boolean, val ticket: String, val capabilities: Capabilities,
+    val runningCount: Int? = null, val idleCount: Int? = null)
+data class Agent(val id: String, val name: String, val status: String, val task: String = "",
+    val model: String = "", val parentKnown: Boolean = false, val parentAgentID: String? = null)
 data class Activity(val id: String, val kind: String, val title: String, val detail: String,
     val timestamp: String, val agentID: String = "", val clientTurnID: String = "")
 data class ControlReceipt(val id: String, val action: String, val message: String, val status: String,

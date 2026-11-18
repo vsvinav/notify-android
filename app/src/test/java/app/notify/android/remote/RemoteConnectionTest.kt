@@ -26,6 +26,8 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import app.notify.android.controller.ControllerState
+import app.notify.android.controller.Snapshots
 
 /** Real HTTPS/WSS with a deterministic plaintext crypto fixture, NOT an MLS interoperability test. */
 class RemoteConnectionTest {
@@ -34,6 +36,7 @@ class RemoteConnectionTest {
     private lateinit var service: ServiceClient
     private lateinit var connection: RemoteConnection
     private val statuses = LinkedBlockingQueue<RemoteStatus>()
+    private val trace = ConnectionTrace { System.nanoTime() / 1_000_000 }
     private val peers = mutableListOf<FixtureCrypto>()
     private val elapsed = AtomicLong(0)
     private val wallOffset = AtomicLong(0)
@@ -56,7 +59,7 @@ class RemoteConnectionTest {
         service, macID, deviceID, pin,
         { statuses.add(it) },
         { FixtureCrypto(failure).also { synchronized(peers) { peers.add(it) } } },
-        { elapsed.get() }, { clockWall?.invoke() ?: (System.currentTimeMillis() + wallOffset.get()) }
+        { elapsed.get() }, { clockWall?.invoke() ?: (System.currentTimeMillis() + wallOffset.get()) }, trace
     )
 
     @After fun stop() {
@@ -168,6 +171,85 @@ class RemoteConnectionTest {
         first.await()
         assertThrows(IllegalArgumentException::class.java) { runBlocking { connection.request("state", JSONObject(), id) } }
         assertEquals(1, relay.frames.size)
+    }
+
+    @Test fun workspaceFailureCanToggleUiLivenessWithoutReconnectingRelay() = runBlocking {
+        grant()
+        val relay = Relay().also { it.enqueue() }
+        connection.connect()
+        val connected = status("connected")
+        var ui = ControllerState(status = connected, foreground = true, now = 100)
+
+        suspend fun receiveState(now: Long) {
+            val result = async { connection.request("state", JSONObject()) }
+            val frame = withTimeout(3000) { while (relay.frames.isEmpty()) delay(10); relay.frames.take() }
+            assertEquals(epoch, frame.getString("epoch"))
+            relay.send(JSONObject().put("id", frame.getString("id")).put("status", 200)
+                .put("data", JSONObject("""{"connected":true,"requests":[]}""")))
+            val snapshot = Snapshots.requests(result.await())
+            ui = ui.receiveRequests(snapshot, now)
+        }
+
+        receiveState(100)
+        assertTrue(ui.live)
+        val workspace = async { runCatching { connection.request("workspace", JSONObject().put("sessionID", JSONObject.NULL)) } }
+        val frame = withTimeout(3000) { while (relay.frames.isEmpty()) delay(10); relay.frames.take() }
+        relay.send(JSONObject().put("id", frame.getString("id")).put("status", 503)
+            .put("data", JSONObject().put("error", "Synthetic workspace unavailable")))
+        assertTrue(workspace.await().exceptionOrNull() is IOException)
+        // ControllerViewModel.guarded handles this IOException by invalidating snapshots, not the relay.
+        ui = ui.staleSnapshots()
+        assertFalse(ui.live)
+        assertEquals("connected", ui.status.state)
+        receiveState(2100)
+        assertTrue(ui.live)
+        assertEquals("connected", ui.status.state)
+        assertEquals(3, server.requestCount)
+        assertEquals(1, synchronized(peers) { peers.size })
+        assertFalse(synchronized(peers) { peers.single().closed })
+        assertTrue(statuses.isEmpty())
+    }
+
+    @Test fun peerClosureDuringPollingRepeatsApprovedHandshakeAndDiscardsCloseReason() = runBlocking {
+        trace.start()
+        grant()
+        var relay = Relay().also { it.enqueue() }
+        connection.connect()
+        repeat(3) { cycle ->
+            status("connecting")
+            status("pending")
+            status("connected")
+            for (path in listOf("state", "workspace")) {
+                val response = async { connection.request(path, JSONObject()) }
+                val frame = withTimeout(3000) { while (relay.frames.isEmpty()) delay(10); relay.frames.take() }
+                assertEquals(path, frame.getJSONObject("payload").getString("path"))
+                relay.ack(frame.getString("id"))
+                assertTrue(response.await().getBoolean("ok"))
+            }
+            if (cycle < 2) {
+                grant()
+                val next = Relay().also { it.enqueue() }
+                delay(2000)
+                relay.socket.close(1001, "synthetic peer-side reason")
+                val disconnected = status("disconnected")
+                assertTrue(disconnected.message.contains("Reconnecting safely in 1s"))
+                assertFalse(disconnected.message.contains("synthetic peer-side reason"))
+                relay = next
+            }
+        }
+        assertEquals(9, server.requestCount)
+        assertEquals(3, synchronized(peers) { peers.size })
+        assertTrue(synchronized(peers) { peers.dropLast(1).all { it.closed } })
+        val captured = trace.snapshot()
+        val closure = captured.entries.first { it.event == TraceEvent.RELAY_CLOSED }
+        assertEquals(1001, closure.wsCode)
+        assertEquals(TracePhase.READY, closure.phase)
+        assertTrue(captured.entries.any { it.event == TraceEvent.RETRY_SCHEDULED && it.retryMs == 1000L })
+        assertTrue(captured.entries.any { it.event == TraceEvent.CONNECTED && it.attempt == 3 })
+        assertFalse(captured.text.contains("synthetic peer-side reason"))
+        for (privateValue in listOf(macID, deviceID, epoch, grantID, server.url("/").toString())) {
+            assertFalse(captured.text.contains(privateValue))
+        }
     }
 
     @Test fun wrongSenderIsTerminalAndPreservesTrust() {
@@ -417,9 +499,76 @@ class RemoteConnectionTest {
         assertEquals(5, server.requestCount)
     }
 
-    @Test fun renewal401IsTerminal() {
+    @Test fun renewal401UsesFreshGrantAndCryptoWithoutReplayingPendingControl() = runBlocking {
+        trace.start()
+        grant()
+        val oldRelay = Relay().also { it.enqueue() }
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":"Connected routing authorization required."}"""))
+        grant()
+        val freshRelay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        val pending = async { runCatching { connection.request("control", JSONObject().put("synthetic", true)) } }
+        withTimeout(3000) { while (oldRelay.frames.isEmpty()) delay(10) }
+        assertEquals("control", oldRelay.frames.take().getJSONObject("payload").getString("path"))
+        repeat(3) { server.takeRequest() }
+        assertEquals("/v1/remote/grant/renew", server.takeRequest(12, TimeUnit.SECONDS)?.path)
+        status("disconnected")
+        status("connected")
+        assertEquals(listOf("/v1/remote/grant/begin", "/v1/remote/grant/finish", "/v1/relay"),
+            (1..3).map { server.takeRequest(3, TimeUnit.SECONDS)?.path })
+        val failure = pending.await().exceptionOrNull()
+        assertTrue(failure is RemoteRequestFailure && failure.uncertain)
+        assertEquals(7, server.requestCount)
+        assertTrue(freshRelay.frames.isEmpty())
+        assertEquals(2, synchronized(peers) { peers.size })
+        assertTrue(synchronized(peers) { peers.first().closed })
+        assertEquals(listOf("authorize", "renew-1"), synchronized(peers) { peers.first().signed.toList() })
+        assertEquals(listOf("authorize"), synchronized(peers) { peers.last().signed.toList() })
+        assertTrue(trace.snapshot().entries.any {
+            it.event == TraceEvent.RENEW_FAILURE && it.category == TraceCategory.RENEWAL_REJECTED && it.httpCode == 401
+        })
+        assertTrue(trace.snapshot().entries.any { it.event == TraceEvent.RETRY_SCHEDULED && it.retryMs == 1000L })
+        val read = async { connection.request("state", JSONObject()) }
+        val frame = withTimeout(3000) { while (freshRelay.frames.isEmpty()) delay(10); freshRelay.frames.take() }
+        assertEquals("state", frame.getJSONObject("payload").getString("path"))
+        freshRelay.ack(frame.getString("id"))
+        assertTrue(read.await().getBoolean("ok"))
+        assertTrue(freshRelay.frames.isEmpty())
+    }
+
+    @Test fun renewal401FreshBeginRejectionIsTerminalWithoutLooping() {
         grant(); Relay().enqueue()
         server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":"Connected routing authorization required."}"""))
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":"Account or device authorization required."}"""))
+        connection.connect(); status("connected")
+        repeat(3) { server.takeRequest() }
+        assertEquals("/v1/remote/grant/renew", server.takeRequest(12, TimeUnit.SECONDS)?.path)
+        assertEquals("/v1/remote/grant/begin", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+        assertTrue(status("error").message.contains("Account or device"))
+        assertNull(server.takeRequest(1500, TimeUnit.MILLISECONDS))
+        assertEquals(5, server.requestCount)
+        assertTrue(synchronized(peers) { peers.all { it.closed } })
+    }
+
+    @Test fun renewal401FreshFinishRejectionIsTerminalWithoutLooping() {
+        grant(); Relay().enqueue()
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":"Connected routing authorization required."}"""))
+        server.enqueue(MockResponse().setBody(JSONObject().put("id", grantID).put("challenge", "reauthorize").toString()))
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":"Signature or account authorization rejected."}"""))
+        connection.connect(); status("connected")
+        repeat(3) { server.takeRequest() }
+        assertEquals("/v1/remote/grant/renew", server.takeRequest(12, TimeUnit.SECONDS)?.path)
+        assertEquals("/v1/remote/grant/begin", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+        assertEquals("/v1/remote/grant/finish", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+        assertTrue(status("error").message.contains("Signature or account"))
+        assertNull(server.takeRequest(1500, TimeUnit.MILLISECONDS))
+        assertEquals(6, server.requestCount)
+        assertTrue(synchronized(peers) { peers.all { it.closed } })
+    }
+
+    @Test fun renewal403IsTerminal() {
+        grant(); Relay().enqueue()
+        server.enqueue(MockResponse().setResponseCode(403).setBody("""{"error":"Connected routing authorization forbidden."}"""))
         connection.connect(); status("connected")
         repeat(3) { server.takeRequest() }
         assertEquals("/v1/remote/grant/renew", server.takeRequest(12, TimeUnit.SECONDS)?.path)

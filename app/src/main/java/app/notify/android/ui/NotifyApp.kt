@@ -1,13 +1,7 @@
 package app.notify.android.ui
 
 import android.app.Activity
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -15,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -22,18 +17,17 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.notify.android.controller.*
 import app.notify.android.controller.Target
@@ -42,32 +36,41 @@ import java.util.Base64
 import kotlinx.coroutines.launch
 
 private val light = lightColorScheme(
-    primary = Color(0xFF96472E), onPrimary = Color.White,
-    primaryContainer = Color(0xFFF5D5C7), onPrimaryContainer = Color(0xFF3A190D),
-    secondary = Color(0xFF69564A), onSecondary = Color.White,
-    secondaryContainer = Color(0xFFECE0D2), onSecondaryContainer = Color(0xFF29221C),
-    background = Color(0xFFF8F4EC), onBackground = Color(0xFF292521),
-    surface = Color(0xFFF8F4EC), onSurface = Color(0xFF292521),
-    surfaceVariant = Color(0xFFECE5DA), onSurfaceVariant = Color(0xFF60574F),
-    surfaceContainer = Color(0xFFF0E9DE), surfaceContainerLow = Color(0xFFF5EFE5),
-    surfaceContainerHigh = Color(0xFFEAE2D7), surfaceContainerHighest = Color(0xFFE4DCD1),
-    surfaceContainerLowest = Color(0xFFFFFBF5),
-    outline = Color(0xFF80746B), error = Color(0xFFA32C24),
+    primary = Color(0xFF765C3C), onPrimary = Color(0xFFFBF7F0),
+    primaryContainer = Color(0xFFDCD0BE), onPrimaryContainer = Color(0xFF34302A),
+    secondary = Color(0xFF60564B), onSecondary = Color(0xFFFBF7F0),
+    secondaryContainer = Color(0xFFDCD0BE), onSecondaryContainer = Color(0xFF34302A),
+    tertiary = Color(0xFF754718), onTertiary = Color(0xFFFBF7F0),
+    tertiaryContainer = Color(0xFFDCD0BE), onTertiaryContainer = Color(0xFF754718),
+    background = Color(0xFFEAE3D8), onBackground = Color(0xFF34302A),
+    surface = Color(0xFFF3EEE5), onSurface = Color(0xFF34302A),
+    surfaceVariant = Color(0xFFE7DFD2), onSurfaceVariant = Color(0xFF60564B),
+    surfaceContainer = Color(0xFFEAE3D8), surfaceContainerLow = Color(0xFFE7DFD2),
+    surfaceContainerHigh = Color(0xFFDCD0BE), surfaceContainerHighest = Color(0xFFDCD0BE),
+    surfaceContainerLowest = Color(0xFFFBF7F0), surfaceTint = Color(0xFF765C3C),
+    outline = Color(0xFF796B5A), outlineVariant = Color(0xFF796B5A).copy(alpha = .32f),
+    error = Color(0xFF873B37), onError = Color(0xFFFBF7F0),
+    errorContainer = Color(0xFFDCD0BE), onErrorContainer = Color(0xFF873B37),
+    inverseSurface = Color(0xFF34302A), inverseOnSurface = Color(0xFFF3EEE5), inversePrimary = Color(0xFFCFAD7E),
 )
 private val dark = darkColorScheme(
-    primary = Color(0xFFF1AC8F), onPrimary = Color(0xFF522512),
-    primaryContainer = Color(0xFF713A26), onPrimaryContainer = Color(0xFFFFDBC9),
-    secondary = Color(0xFFD5C0AF), onSecondary = Color(0xFF392E26),
-    secondaryContainer = Color(0xFF4D4036), onSecondaryContainer = Color(0xFFF0DFCE),
-    background = Color(0xFF211E1B), onBackground = Color(0xFFEDE4D9),
-    surface = Color(0xFF211E1B), onSurface = Color(0xFFEDE4D9),
-    surfaceVariant = Color(0xFF494139), onSurfaceVariant = Color(0xFFD2C4B6),
-    surfaceContainer = Color(0xFF292520), surfaceContainerLow = Color(0xFF25211D),
-    surfaceContainerHigh = Color(0xFF332D27), surfaceContainerHighest = Color(0xFF3C352E),
-    surfaceContainerLowest = Color(0xFF191613),
-    outline = Color(0xFFA49587), error = Color(0xFFFFB4A9),
+    primary = Color(0xFFCFAD7E), onPrimary = Color(0xFF27221C),
+    primaryContainer = Color(0xFF3C352C), onPrimaryContainer = Color(0xFFE9E0D2),
+    secondary = Color(0xFFBFB2A0), onSecondary = Color(0xFF27221C),
+    secondaryContainer = Color(0xFF3C352C), onSecondaryContainer = Color(0xFFE9E0D2),
+    tertiary = Color(0xFFE1BB82), onTertiary = Color(0xFF27221C),
+    tertiaryContainer = Color(0xFF3C352C), onTertiaryContainer = Color(0xFFE1BB82),
+    background = Color(0xFF211F1C), onBackground = Color(0xFFE9E0D2),
+    surface = Color(0xFF292622), onSurface = Color(0xFFE9E0D2),
+    surfaceVariant = Color(0xFF24211E), onSurfaceVariant = Color(0xFFBFB2A0),
+    surfaceContainer = Color(0xFF211F1C), surfaceContainerLow = Color(0xFF24211E),
+    surfaceContainerHigh = Color(0xFF3C352C), surfaceContainerHighest = Color(0xFF3C352C),
+    surfaceContainerLowest = Color(0xFF211F1C), surfaceTint = Color(0xFFCFAD7E),
+    outline = Color(0xFFA18F78), outlineVariant = Color(0xFFA18F78).copy(alpha = .32f),
+    error = Color(0xFFE4A294), onError = Color(0xFF27221C),
+    errorContainer = Color(0xFF3C352C), onErrorContainer = Color(0xFFE4A294),
+    inverseSurface = Color(0xFFE9E0D2), inverseOnSurface = Color(0xFF292622), inversePrimary = Color(0xFF765C3C),
 )
-private enum class Destination(val title: String) { Inbox("Inbox"), Sessions("Sessions"), Settings("Settings") }
 internal class FeedPosition {
     val list = LazyListState()
     var following by mutableStateOf(true)
@@ -77,59 +80,73 @@ internal class FeedPosition {
 @Composable
 fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
     val state by controller.state.collectAsState()
-    var destination by rememberSaveable { mutableStateOf(Destination.Inbox) }
-    val positions = remember { mutableMapOf<Target, FeedPosition>() }
-    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) dark else light) {
-        BackHandler(enabled = state.notices != null || state.review != null || state.controlReview != null ||
-            destination != Destination.Inbox || state.workspace.sessionID != null) {
-            when {
-                state.notices != null -> controller.closeNotices()
-                state.review != null || state.controlReview != null -> controller.cancelReview()
-                destination == Destination.Sessions && state.workspace.sessionID != null -> controller.selectSession(null)
-                else -> destination = Destination.Inbox
+    val enableAlerts = rememberEnableAlerts(controller, activity)
+    var destination by rememberSaveable { mutableStateOf(Destination.Chat) }
+    var settingsSection by rememberSaveable { mutableStateOf(SettingsSection.Overview) }
+    var settingsParent by rememberSaveable { mutableStateOf(SettingsSection.Overview) }
+    val positions = remember(state.account, state.relationship) { mutableMapOf<Target, FeedPosition>() }
+    val feedback = remember(state.account, state.relationship) { mutableStateMapOf<RemoteRequest, String>() }
+    LaunchedEffect(state.inbox.cards) {
+        feedback.keys.retainAll(state.inbox.cards.map { it.request }.toSet())
+    }
+    val route = controllerRoute(state)
+    val back: () -> Unit = {
+        when {
+            state.notices != null -> controller.closeNotices()
+            state.review != null || state.controlReview != null -> controller.cancelReview()
+            route == ControllerRoute.Notifications -> controller.finishNotificationSetup()
+            destination == Destination.Settings && settingsSection != SettingsSection.Overview -> {
+                settingsSection = settingsParent
+                settingsParent = SettingsSection.Overview
             }
+            else -> destination = Destination.Chat
         }
-        BoxWithConstraints(Modifier.fillMaxSize()) {
-            val expanded = maxWidth >= 700.dp
-            Scaffold(
-                topBar = { TopAppBar(title = { Text("Notify", style = MaterialTheme.typography.titleLarge) },
-                    actions = { Text(if (state.live) "Connected" else when (state.status.state) {
-                        "pending" -> "Awaiting Mac"
-                        "connecting" -> "Connecting"
-                        else -> "Not connected"
-                    }, Modifier.padding(end = 16.dp), style = MaterialTheme.typography.labelLarge) }) },
-                bottomBar = { if (!expanded) NavigationBar {
-                    Destination.entries.forEach { tab -> NavigationBarItem(selected = destination == tab,
-                        onClick = { destination = tab }, icon = { NavigationMark(tab) }, label = { Text(tab.title) }) }
-                } },
-            ) { padding ->
-                Row(Modifier.fillMaxSize().padding(padding).imePadding()) {
-                    if (expanded) NavigationRail {
-                        Destination.entries.forEach { tab -> NavigationRailItem(selected = destination == tab,
-                            onClick = { destination = tab }, icon = { NavigationMark(tab) }, label = { Text(tab.title) }) }
-                    }
-                    Column(Modifier.weight(1f).fillMaxHeight().widthIn(max = 1000.dp)) {
-                        if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                        state.error?.let { error ->
-                            Surface(color = MaterialTheme.colorScheme.errorContainer) {
-                                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                                    Text(error, Modifier.heightIn(max = 128.dp).verticalScroll(rememberScrollState())
-                                        .padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite },
-                                        color = MaterialTheme.colorScheme.onErrorContainer)
-                                    TextButton(onClick = controller::clearError) { Text("Dismiss message") }
-                                }
-                            }
-                        }
-                        when {
-                            state.notices != null -> Notices(state.notices!!, controller::closeNotices)
-                            destination == Destination.Settings -> Settings(state, controller, activity)
-                            state.account == null -> SignIn(state, controller, activity)
-                            state.relationship == null || state.status.state == "pending" || state.status.state == "connecting" ->
-                                ConnectionSetup(state, controller)
-                            destination == Destination.Sessions -> Sessions(state, controller, positions)
-                            else -> Inbox(state, controller)
+    }
+    val canGoBack = state.notices != null || route == ControllerRoute.Notifications || destination != Destination.Chat
+    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) dark else light) {
+        BackHandler(canGoBack || state.review != null || state.controlReview != null, back)
+        val title = when {
+            state.notices != null -> "Third-party notices"
+            route == ControllerRoute.Notifications -> "Notifications"
+            destination == Destination.Settings -> settingsSection.title
+            route == ControllerRoute.Pairing -> "Connect your Mac"
+            route == ControllerRoute.SignIn -> "Sign in"
+            route == ControllerRoute.Trust -> "Mac approval"
+            destination == Destination.Requests -> "Needs you"
+            else -> state.workspace.session?.name ?: if (state.workspace.sessionID == null) "Notify" else "Session unavailable"
+        }
+        ChatShell(state, destination, title, canGoBack, back,
+            onNavigate = { destination = it; settingsSection = SettingsSection.Overview; settingsParent = SettingsSection.Overview },
+            onSession = { controller.selectSession(it); destination = Destination.Chat },
+            onConnection = {
+                if (route == ControllerRoute.Notifications) controller.finishNotificationSetup()
+                destination = Destination.Settings
+                settingsSection = SettingsSection.Connection
+                settingsParent = SettingsSection.Overview
+            },
+        ) { openSessions ->
+            Column(Modifier.fillMaxSize()) {
+                if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                state.error?.let { error ->
+                    Surface(color = MaterialTheme.colorScheme.errorContainer) {
+                        Column(Modifier.fillMaxWidth().heightIn(max = 128.dp)
+                            .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+                            Text(error, Modifier.padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                                color = MaterialTheme.colorScheme.onErrorContainer)
+                            TextButton(onClick = controller::clearError) { Text("Dismiss message") }
                         }
                     }
+                }
+                when {
+                    state.notices != null -> Notices(state.notices!!, controller::closeNotices)
+                    route == ControllerRoute.Notifications -> NotificationSetup(state, controller, enableAlerts)
+                    destination == Destination.Settings -> Settings(state, controller, activity, enableAlerts,
+                        settingsSection, { settingsParent = settingsSection; settingsSection = it })
+                    route == ControllerRoute.Pairing -> PairingSetup(state, controller, activity)
+                    route == ControllerRoute.SignIn -> SignIn(state, controller, activity)
+                    route == ControllerRoute.Trust -> ConnectionSetup(state, controller)
+                    destination == Destination.Requests -> Inbox(state, controller, feedback)
+                    else -> Sessions(state, controller, positions, feedback, openSessions)
                 }
             }
         }
@@ -168,38 +185,16 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
 }
 
 @Composable
-private fun NavigationMark(tab: Destination) {
-    val color = LocalContentColor.current
-    Canvas(Modifier.size(24.dp)) {
-        val stroke = 1.8.dp.toPx()
-        when (tab) {
-            Destination.Inbox -> {
-                drawRect(color, Offset(size.width * .12f, size.height * .2f), Size(size.width * .76f, size.height * .6f), style = Stroke(stroke))
-                drawLine(color, Offset(size.width * .12f, size.height * .55f), Offset(size.width * .88f, size.height * .55f), stroke)
-            }
-            Destination.Sessions -> for (y in listOf(.25f, .5f, .75f)) {
-                drawCircle(color, stroke, Offset(size.width * .18f, size.height * y))
-                drawLine(color, Offset(size.width * .36f, size.height * y), Offset(size.width * .87f, size.height * y), stroke)
-            }
-            Destination.Settings -> {
-                for (x in listOf(.25f, .5f, .75f)) drawLine(color, Offset(size.width * x, size.height * .13f), Offset(size.width * x, size.height * .87f), stroke)
-                for ((x, y) in listOf(.25f to .35f, .5f to .65f, .75f to .4f)) drawCircle(color, stroke * 2, Offset(size.width * x, size.height * y))
-            }
-        }
-    }
-}
-
-@Composable
-private fun Page(content: @Composable ColumnScope.() -> Unit) {
+internal fun Page(content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
 }
-@Composable private fun Heading(text: String) { Text(text, style = MaterialTheme.typography.headlineSmall) }
-@Composable private fun Supporting(text: String) { Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-@Composable private fun Action(label: String, enabled: Boolean = true, onClick: () -> Unit) {
+@Composable internal fun Heading(text: String) { Text(text, style = MaterialTheme.typography.headlineSmall) }
+@Composable internal fun Supporting(text: String) { Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+@Composable internal fun Action(label: String, enabled: Boolean = true, onClick: () -> Unit) {
     Button(onClick = onClick, enabled = enabled, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text(label) }
 }
-@Composable private fun Evidence(label: String, value: String, code: Boolean = false) {
+@Composable internal fun Evidence(label: String, value: String, code: Boolean = false) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(label, style = MaterialTheme.typography.labelLarge)
         SelectionContainer { Text(value, style = MaterialTheme.typography.bodyMedium,
@@ -214,6 +209,10 @@ private fun SignIn(state: ControllerState, controller: ControllerViewModel, acti
         Heading("Sign in to Notify")
         Supporting("Use your account passkey. Signing in does not grant access to a Mac; pairing and local Mac approval are separate.")
         if (state.relationship != null) Supporting("Your Mac pairing is saved on this phone. Sign in to its account to reconnect.")
+        if (state.account != null && state.account != state.relationship?.account) {
+            Supporting("This account does not match your saved pairing. Sign out before signing in to the paired account.")
+            OutlinedButton(onClick = controller::signOut, enabled = !state.busy) { Text("Sign out · keep pairing") }
+        }
         Action("Sign in with a passkey", !state.busy) { controller.signIn(activity, false, "") }
         HorizontalDivider()
         OutlinedTextField(name, { if (it.length <= 80) name = it }, label = { Text("New account name") },
@@ -226,27 +225,24 @@ private fun SignIn(state: ControllerState, controller: ControllerViewModel, acti
 
 @Composable
 private fun ConnectionSetup(state: ControllerState, controller: ControllerViewModel) {
-    var link by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("Android phone") }
+    var recover by remember { mutableStateOf(false) }
     Page {
-        val record = state.relationship
-        Heading(if (record == null) "Pair with your Mac" else "Compare on your Mac")
-        if (record == null) {
-            Supporting("On your Mac, open Notify → Remote Access. Paste its complete pairing link here while you can compare both screens.")
-            OutlinedTextField(link, { if (it.length <= 2048) link = it }, label = { Text("Full Mac pairing link") },
-                supportingText = { Text("Must include #setup, mac and the complete public key.") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
-            OutlinedTextField(name, { if (it.length <= 80) name = it }, label = { Text("Phone name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Action("Pair with this Mac", !state.busy && link.isNotBlank() && name.isNotBlank()) { controller.pair(link, name) }
-        } else {
-            PublicKeys(record)
-            Supporting("Approve on the Mac only when every character of the phone public key matches. A name or short prefix is not proof.")
-            Supporting(state.status.message)
-            OutlinedButton(onClick = controller::retry, enabled = !state.busy && record.enrolled) { Text("Retry connection") }
-            Supporting("You can explicitly forget a pairing in Settings. A pending enrollment is not Mac approval.")
-        }
+        val record = state.relationship ?: return@Page
+        Heading("Compare on your Mac")
+        PublicKeys(record)
+        Supporting("Approve on the Mac only when every character of the phone public key matches. A name or short prefix is not proof.")
+        Supporting(state.status.message)
+        OutlinedButton(onClick = controller::retry, enabled = !state.busy && record.enrolled) { Text("Retry connection") }
+        Supporting("You can explicitly forget a pairing in Settings. A pending enrollment is not Mac approval.")
+        if (!record.enrolled) OutlinedButton(onClick = { recover = true }, enabled = !state.busy) { Text("Recover with a fresh QR") }
+    }
+    if (recover) Confirmation("Replace this unconfirmed pairing?", { recover = false },
+        { recover = false; controller.forget() }, !state.busy) {
+        Text("The previous enrollment may have reached your Mac. Reject or revoke that phone there first. This deletes its saved phone key; it does not revoke access on the Mac.")
+        Text("Then request a fresh QR on the Mac, scan it and compare the new complete public key. Nothing is automatically resent.")
     }
 }
-@Composable private fun PublicKeys(record: Relationship) {
+@Composable internal fun PublicKeys(record: Relationship) {
     Evidence("Phone · ${record.name}", Base64.getEncoder().encodeToString(decodeKey(record.publicKey)), true)
     Supporting("Complete phone key: 88 characters including the final =.")
     Evidence("Mac ID", record.macID)
@@ -254,12 +250,15 @@ private fun ConnectionSetup(state: ControllerState, controller: ControllerViewMo
 }
 
 @Composable
-private fun Inbox(state: ControllerState, controller: ControllerViewModel) {
-    val cards = state.inbox.visibleCards
-    val card = cards.singleOrNull { it.request.ticket == state.inbox.selectedTicket }
+private fun Inbox(state: ControllerState, controller: ControllerViewModel, feedback: MutableMap<RemoteRequest, String>,
+    sessionID: String? = null) {
+    val cards = decisionCards(state, sessionID)
+    val card = cards.singleOrNull { it.request.ticket == state.inbox.selectedTicket } ?: cards.firstOrNull()
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+    val headerHeight = maxHeight * .35f
     Column(Modifier.fillMaxSize()) {
-        Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Heading("Inbox")
+        Column(Modifier.heightIn(max = headerHeight).verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!state.live) {
                 Supporting("${state.status.message} Replies are disabled until a fresh Mac update.")
                 OutlinedButton(onClick = controller::retry, enabled = !state.busy) { Text("Retry connection") }
@@ -268,16 +267,21 @@ private fun Inbox(state: ControllerState, controller: ControllerViewModel) {
                 card?.request?.ticket ?: "", controller::selectRequest)
         }
         if (card == null) {
-            Text(if (state.live) "No waiting requests reported by your Mac." else "Waiting for a fresh request snapshot.",
+            Text(if (state.live) if (sessionID == null) "No waiting requests reported by your Mac."
+                else "No waiting decisions for this session. Other sessions’ requests are in the sessions menu."
+                else "Waiting for a fresh request snapshot.",
                 Modifier.padding(20.dp), style = MaterialTheme.typography.bodyLarge)
         } else key(card.request) {
-            RequestReview(card, state.live && !state.busy && card.delivery == Delivery.Ready && !card.request.sending, controller)
+            RequestReview(card, state.live && !state.busy && card.delivery == Delivery.Ready && !card.request.sending, controller,
+                feedback[card.request].orEmpty(), { feedback[card.request] = it })
         }
     }
+    }
 }
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun RequestReview(card: RequestCard, enabled: Boolean, controller: ControllerViewModel) {
-    var feedback by remember { mutableStateOf("") }
+private fun RequestReview(card: RequestCard, enabled: Boolean, controller: ControllerViewModel,
+    feedback: String, onFeedback: (String) -> Unit) {
     val r = card.request
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
         item {
@@ -316,27 +320,34 @@ private fun RequestReview(card: RequestCard, enabled: Boolean, controller: Contr
             }
         }
         if (r.prompt.supportsFeedback) item {
-            OutlinedTextField(feedback, { if (it.length <= 4000) feedback = it },
+            OutlinedTextField(feedback, { if (it.length <= 4000) onFeedback(it) },
                 label = { Text("Optional feedback when denying") }, enabled = enabled, modifier = Modifier.fillMaxWidth())
         }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                HorizontalDivider()
+                Supporting("Review all details above. You’ll confirm the exact reply before it is sent.")
+                if (!enabled) Supporting("Replies are unavailable until this exact request is fresh and ready.")
                 when (card.delivery) {
                     is Delivery.Pending -> Supporting("Waiting for the Mac to acknowledge this exact reply…")
                     Delivery.Unknown -> Supporting("Delivery unknown. Check your Mac. Nothing was resent; this request cannot be submitted again.")
                     else -> if (r.sending) Supporting("A reply is already being sent from another surface.")
                 }
                 if (r.prompt.kind == "permission") {
-                    Action("Allow once", enabled) { controller.reviewReply(r.ticket, ReplyDecision.AllowOnce, "") }
                     r.prompt.permissionOptions.forEach { option ->
                         OutlinedButton(onClick = { controller.reviewReply(r.ticket, ReplyDecision.Permission(option.id), "") },
                             enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                             Column { Text(option.label); if (option.detail.isNotEmpty()) Text(option.detail, style = MaterialTheme.typography.bodySmall) }
                         }
                     }
-                } else Action("Review answer", enabled) { controller.reviewReply(r.ticket, ReplyDecision.Answer, "") }
-                OutlinedButton(onClick = { controller.reviewReply(r.ticket, ReplyDecision.Deny, feedback) },
-                    enabled = enabled, modifier = Modifier.heightIn(min = 48.dp)) { Text(if (r.prompt.kind == "permission") "Deny" else "Decline request") }
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = { controller.reviewReply(r.ticket, ReplyDecision.Deny, feedback) },
+                        enabled = enabled, modifier = Modifier.heightIn(min = 48.dp)) { Text(if (r.prompt.kind == "permission") "Deny" else "Decline request") }
+                    if (r.prompt.kind == "permission")
+                        Action("Allow once", enabled) { controller.reviewReply(r.ticket, ReplyDecision.AllowOnce, "") }
+                    else Action("Review answer", enabled) { controller.reviewReply(r.ticket, ReplyDecision.Answer, "") }
+                }
             }
         }
     }
@@ -358,68 +369,177 @@ private fun RequestReview(card: RequestCard, enabled: Boolean, controller: Contr
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun Sessions(state: ControllerState, controller: ControllerViewModel, positions: MutableMap<Target, FeedPosition>) {
+internal fun Sessions(state: ControllerState, controller: ControllerViewModel,
+    positions: MutableMap<Target, FeedPosition>, feedback: MutableMap<RemoteRequest, String>,
+    openSessions: () -> Unit = {}) {
     val workspace = state.workspace
+    var pane by rememberSaveable(workspace.sessionID) { mutableStateOf(SessionPane.Chat) }
+    BackHandler(pane != SessionPane.Chat) { pane = SessionPane.Chat }
+    val select: (String) -> Unit = { agentID ->
+        controller.selectSession(workspace.sessionID, agentID)
+        pane = SessionPane.Chat
+    }
     if (workspace.sessionID == null) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { Heading("Sessions") }
-            if (!state.live) item {
-                Supporting("Showing the last reported sessions. Connect to refresh and enable supported controls.")
-                OutlinedButton(onClick = controller::retry, enabled = !state.busy) { Text("Retry connection") }
-            }
-            if (workspace.snapshot?.sessions.isNullOrEmpty()) item { Supporting("No sessions reported. Connect an agent in Notify on your Mac.") }
-            items(workspace.snapshot?.sessions ?: emptyList(), key = { it.id }) { session ->
-                OutlinedCard(onClick = { controller.selectSession(session.id) }, modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(session.name, style = MaterialTheme.typography.titleMedium)
-                        Supporting("${session.agent} · ${session.project}")
-                        Supporting(if (session.connected) session.state else "Not connected · Set up on Mac")
-                    }
+        SessionChat(state, controller, positions, openSessions) { pane = SessionPane.Agents }
+        return
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val fontScale = LocalDensity.current.fontScale
+        val sideTeam = teamFitsBeside(maxWidth.value, fontScale) && maxHeight >= 320.dp * fontScale
+        val showHeading = maxHeight >= 420.dp * fontScale
+        val scrollNavigation = !drawerKeepsPinnedChrome(maxHeight.value, fontScale)
+        val shortBodyHeight = maxOf(240.dp * fontScale, maxHeight)
+        Column(Modifier.fillMaxSize().then(if (scrollNavigation) Modifier.verticalScroll(rememberScrollState()) else Modifier)) {
+            if (showHeading) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
+                    Text(workspace.session?.name ?: "Session unavailable", style = MaterialTheme.typography.headlineSmall,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(listOfNotNull(workspace.session?.project, workspace.session?.agent).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }
-            if (workspace.snapshot?.truncated == true) item { Supporting("Showing recent reported sessions. The full list is on your Mac.") }
+            val decisions = decisionCards(state, workspace.sessionID).size
+            TabRow(selectedTabIndex = pane.ordinal) {
+                SessionPane.entries.forEach { tab ->
+                    Tab(selected = pane == tab, onClick = { pane = tab },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                        text = {
+                            Text(if (tab == SessionPane.Decision && decisions > 0) "Decision ($decisions)" else tab.name,
+                                style = MaterialTheme.typography.labelLarge)
+                        })
+                }
+            }
+            Row(if (scrollNavigation) Modifier.height(shortBodyHeight) else Modifier.weight(1f)) {
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    when (pane) {
+                        SessionPane.Chat -> SessionChat(state, controller, positions, openSessions) { pane = SessionPane.Agents }
+                        SessionPane.Decision -> Inbox(state, controller, feedback, workspace.sessionID)
+                        SessionPane.Agents -> AgentTeam(state, Modifier.fillMaxSize(), select)
+                    }
+                }
+                if (sideTeam && pane != SessionPane.Agents) {
+                    VerticalDivider()
+                    AgentTeam(state, Modifier.width(280.dp * fontScale).fillMaxHeight(), select)
+                }
+            }
+        }
+    }
+}
+
+private enum class SessionPane { Chat, Decision, Agents }
+
+@Composable
+private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
+    positions: MutableMap<Target, FeedPosition>, openSessions: () -> Unit, openAgents: () -> Unit) {
+    val workspace = state.workspace
+    var tools by rememberSaveable(workspace.sessionID, workspace.agentID) { mutableStateOf(false) }
+    var showHistory by rememberSaveable(workspace.target) { mutableStateOf(false) }
+    var actions by remember { mutableStateOf(false) }
+    if (workspace.sessionID == null) {
+        Page {
+            Heading("Choose a session")
+            Supporting("Open a reported session to continue its conversation. Sessions are started on your Mac.")
+            Action("Open sessions", onClick = openSessions)
+            if (!state.live) {
+                Supporting("Your pairing is saved. Connect and wait for fresh Mac updates to use supported controls.")
+                OutlinedButton(onClick = controller::retry, enabled = !state.busy) { Text("Reconnect") }
+            }
         }
     } else {
         val target = workspace.target
         val position = target?.let { positions.getOrPut(it) { FeedPosition() } }
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            val compact = maxHeight < 500.dp || LocalDensity.current.fontScale > 1.3f
-            Column(Modifier.fillMaxSize().then(if (compact) Modifier.verticalScroll(rememberScrollState()) else Modifier)
-            .padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { controller.selectSession(null) }) { Text("All sessions") }
-            Text(workspace.session?.name ?: "Session unavailable", style = MaterialTheme.typography.titleLarge)
-            Supporting("${workspace.session?.agent ?: ""} · ${workspace.session?.state ?: "Waiting for session"}")
-            Picker("Chat with", listOf("" to "Main agent") + (workspace.detail?.agents?.map { it.id to "${it.name} · ${it.status}" } ?: emptyList()),
-                workspace.agentID) { controller.selectSession(workspace.sessionID, it) }
-            if (position == null || workspace.detail == null) {
-                Text("Waiting for this exact session and current ticket.", if (compact) Modifier.heightIn(min = 120.dp) else Modifier.weight(1f))
-            } else key(target) {
-                Conversation(workspace, position, if (compact) Modifier.height(320.dp) else Modifier.weight(1f))
-            }
-            val unavailable = if (!state.live) "Reconnect with a fresh Mac update before sending." else workspace.unavailable("queue", state.now)
-            workspace.delivery?.let { Supporting(it.status) }
-            if (unavailable != null) Supporting(unavailable)
-            OutlinedTextField(workspace.draft, controller::draft, label = { Text("Message to ${if (workspace.agentID.isEmpty()) "main agent" else "selected subagent"}") },
-                enabled = !state.busy && target != null && workspace.delivery?.blocked != true,
-                modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp), maxLines = 5)
-            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Action("Send", !state.busy && unavailable == null && workspace.draft.isNotBlank()) { controller.prepareControl("queue") }
-                if (workspace.agentID.isEmpty()) OutlinedButton(onClick = { controller.prepareControl("interrupt") },
-                    enabled = !state.busy && unavailable == null && workspace.draft.isNotBlank()) { Text("Interrupt") }
-                OutlinedButton(onClick = { controller.prepareControl("stop") }, enabled = state.live && !state.busy &&
-                    workspace.unavailable("stop", state.now) == null) { Text("Stop") }
-            }
-            Spacer(Modifier.height(4.dp))
+            val fontScale = LocalDensity.current.fontScale
+            val compact = maxHeight < 420.dp || fontScale > 1.3f
+            val composerHeight = composerHeightLimit(maxHeight.value, fontScale)?.dp
+            val scrollLayout = composerHeight == null
+            val presentation = targetPresentation(state)
+            val targetName = presentation.name
+            val unavailable = if (!state.live) "Waiting for fresh Mac updates. Your draft stays here; nothing will be sent."
+                else workspace.unavailable("queue", state.now)
+            Column(Modifier.fillMaxSize().then(if (scrollLayout) Modifier.verticalScroll(rememberScrollState()) else Modifier)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+                        AgentIllustration(presentation.presence, Modifier.size(40.dp),
+                            isLead = workspace.agentID.isEmpty(), portrait = true)
+                    }
+                    Column(Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 10.dp)) {
+                        Text(presentation.name, style = MaterialTheme.typography.titleSmall)
+                        Text(if (tools) "Tools & thinking · ${presentation.label}" else presentation.label,
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Box {
+                        IconButton(onClick = { actions = true },
+                            modifier = Modifier.semantics { contentDescription = "Session actions" }) { ShellIcon(ShellMark.More) }
+                        DropdownMenu(actions, { actions = false }) {
+                            DropdownMenuItem(text = { Text(if (tools) "Show conversation" else "Tools & thinking") },
+                                onClick = { tools = !tools; showHistory = true; actions = false })
+                            DropdownMenuItem(text = { Text("Open sessions") }, onClick = { actions = false; openSessions() })
+                            if (workspace.agentID.isEmpty()) DropdownMenuItem(text = {
+                                Column {
+                                    Text("Interrupt main with draft")
+                                    Text("Stop the current turn and send this instruction.", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }, onClick = { actions = false; controller.prepareControl("interrupt") },
+                                enabled = state.live && !state.busy && workspace.draft.isNotBlank() &&
+                                    workspace.unavailable("interrupt", state.now) == null)
+                            DropdownMenuItem(text = {
+                                Column {
+                                    Text("Stop $targetName")
+                                    Text(workspace.unavailable("stop", state.now) ?: if (!state.live) "Wait for fresh Mac updates."
+                                        else "Requires confirmation for this exact target.", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }, onClick = { actions = false; controller.prepareControl("stop") },
+                                enabled = state.live && !state.busy && workspace.unavailable("stop", state.now) == null)
+                        }
+                    }
+                }
+                if (scrollLayout) TextButton(onClick = { showHistory = !showHistory }, modifier = Modifier.padding(horizontal = 16.dp)) {
+                    Text(if (showHistory) "Hide history" else if (tools) "Show tools & thinking" else "Show conversation")
+                }
+                if (!scrollLayout || showHistory) {
+                    if (position == null || workspace.detail == null) {
+                        Column((if (scrollLayout) Modifier else Modifier.weight(1f).verticalScroll(rememberScrollState())).padding(20.dp)) {
+                            Supporting("Waiting for this exact session and current ticket. No other session has been selected.")
+                            TextButton(onClick = openSessions) { Text("Open sessions") }
+                        }
+                    } else key(target) {
+                        Conversation(workspace, position, tools,
+                            (if (scrollLayout) Modifier.height(180.dp * fontScale) else Modifier.weight(1f)).padding(horizontal = 20.dp))
+                    }
+                }
+                HorizontalDivider()
+                Column(Modifier.fillMaxWidth().then(if (composerHeight != null) Modifier.heightIn(max = composerHeight) else Modifier)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Column(if (scrollLayout) Modifier else Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (workspace.agentID.isNotEmpty()) TextButton(onClick = openAgents) { Text("Change agent") }
+                        workspace.delivery?.let { Supporting(it.status) }
+                        if (unavailable != null) Text(unavailable, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                        OutlinedTextField(workspace.draft, controller::draft,
+                            label = { Text(if (workspace.agentID.isEmpty()) "Message main agent" else "Message selected helper") },
+                            enabled = !state.busy && target != null && workspace.delivery?.blocked != true,
+                            modifier = Modifier.fillMaxWidth(), maxLines = if (compact) 2 else 4)
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text("Enter adds a new line", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Action("Send", !state.busy && unavailable == null && workspace.draft.isNotBlank()) { controller.prepareControl("queue") }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun Conversation(workspace: WorkspaceState, position: FeedPosition, modifier: Modifier) {
-    var tools by remember { mutableStateOf(false) }
+private fun Conversation(workspace: WorkspaceState, position: FeedPosition, tools: Boolean, modifier: Modifier) {
     val detail = workspace.detail!!
     val activity = detail.activity.filter { it.agentID == workspace.agentID }
     val messages = activity.filter { it.kind in setOf("user", "assistant") }.map { it.copy(id = "activity:${it.id}") }.toMutableList()
@@ -438,30 +558,32 @@ private fun Conversation(workspace: WorkspaceState, position: FeedPosition, modi
         if (!tools && position.following && !position.list.isScrollInProgress && feed.isNotEmpty()) position.list.scrollToItem(feed.lastIndex)
     }
     Column(modifier) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(!tools, onClick = { tools = false }, label = { Text("Conversation") })
-            FilterChip(tools, onClick = { tools = true }, label = { Text("Tools & thinking") })
-        }
         if (detail.truncated) Supporting("Recent reported history only. Earlier entries are on your Mac.")
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = if (tools) androidx.compose.foundation.lazy.rememberLazyListState() else position.list,
             verticalArrangement = Arrangement.spacedBy(20.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             if (feed.isEmpty()) item { Supporting(if (tools) "No tool or thinking updates reported." else "No conversation reported for this agent yet.") }
             items(feed, key = { it.id }) { message ->
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("${if (message.kind == "user") "You" else if (message.kind == "assistant") "Assistant" else message.kind} · ${message.title}",
-                        style = MaterialTheme.typography.labelLarge)
-                    SelectionContainer { Text(message.detail, fontFamily = if (tools) FontFamily.Monospace else FontFamily.Default) }
-                    CopyButton(message.detail)
+                Surface(
+                    color = if (message.kind == "user") MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surface,
+                    shape = MaterialTheme.shapes.large,
+                    modifier = Modifier.fillMaxWidth().padding(start = if (message.kind == "user") 32.dp else 0.dp),
+                ) {
+                    Column(Modifier.padding(if (message.kind == "user") 14.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("${if (message.kind == "user") "You" else if (message.kind == "assistant") workspace.session?.agent ?: "Assistant" else message.kind} · ${message.title}",
+                            style = MaterialTheme.typography.labelLarge)
+                        SelectionContainer { Text(message.detail, fontFamily = if (tools) FontFamily.Monospace else FontFamily.Default) }
+                        CopyButton(message.detail)
+                    }
                 }
             }
         }
-        if (!tools) TextButton(onClick = {
+        if (!tools && !position.following) TextButton(onClick = {
             position.following = true
             scope.launch { if (feed.isNotEmpty()) position.list.scrollToItem(feed.lastIndex) }
         }) { Text("Jump to latest") }
     }
 }
-@Composable private fun CopyButton(value: String) {
+@Composable internal fun CopyButton(value: String) {
     val clipboard = LocalClipboardManager.current
     var copied by remember(value) { mutableStateOf(false) }
     TextButton(onClick = { clipboard.setText(AnnotatedString(value)); copied = true }, modifier = Modifier.heightIn(min = 48.dp)) {
@@ -469,59 +591,10 @@ private fun Conversation(workspace: WorkspaceState, position: FeedPosition, modi
     }
 }
 
-@Composable
-private fun Settings(state: ControllerState, controller: ControllerViewModel, activity: Activity) {
-    var forget by remember { mutableStateOf(false) }
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) controller.enableNotifications() else controller.notificationPermissionDenied()
-    }
-    Page {
-        Heading("Connection")
-        Supporting(state.status.message)
-        Evidence("Service", SERVICE_ORIGIN)
-        Supporting(if (state.account == null) "Account: signed out. Saved Mac trust is unchanged." else "Account: signed in for this app session.")
-        if (state.account == null) Action("Sign in with a passkey", !state.busy) { controller.signIn(activity, false, "") }
-        state.relationship?.let { record ->
-            PublicKeys(record)
-            Supporting(if (record.enrolled) "Enrollment recorded. Only an approved encrypted channel grants Mac access." else "Enrollment not confirmed. Do not assume the Mac approved this phone.")
-            Action("Retry connection", !state.busy && state.account != null && record.enrolled, controller::retry)
-            OutlinedButton(onClick = controller::disconnect) { Text("Disconnect") }
-            OutlinedButton(onClick = { forget = true }, enabled = !state.busy) { Text("Forget this phone’s pairing") }
-        }
-        if (state.account != null) OutlinedButton(onClick = controller::signOut, enabled = !state.busy) { Text("Sign out · keep pairing") }
-        HorizontalDivider()
-        Heading("Notifications")
-        Text(if (state.notifications.enabled) "Mac attention · on" else "Mac attention · not enabled",
-            style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-        Supporting(state.notifications.description)
-        Supporting("Optional alerts use Google Firebase delivery. Only a generic attention signal is sent—never chat, commands or request text. Tapping opens Notify; it cannot approve anything.")
-        Supporting("Notify includes a soft two-note sound and a short three-pulse vibration. Android’s channel, silent mode and Do Not Disturb settings remain in control. Your Mac must be awake and online.")
-        Action(if (state.notifications.consent) "Refresh notification registration" else "Enable notifications",
-            !state.busy && state.account != null && state.relationship?.enrolled == true &&
-                !state.notifications.cleanupPending) {
-            if (Build.VERSION.SDK_INT >= 33 &&
-                activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
-                permission.launch(Manifest.permission.POST_NOTIFICATIONS)
-            else controller.enableNotifications()
-        }
-        if (state.notifications.consent || state.notifications.cleanupPending) OutlinedButton(
-            onClick = controller::disableNotifications, enabled = !state.busy, modifier = Modifier.heightIn(min = 48.dp)) {
-            Text(if (state.notifications.cleanupPending) "Finish removing notification routing" else "Turn notifications off")
-        }
-        TextButton(onClick = controller::openNotificationSettings) { Text("Android sound, vibration & permission settings") }
-        Supporting("Delivery is best effort. If a token rotates while you’re signed out, sign in and refresh registration here.")
-        TextButton(onClick = controller::notices, enabled = !state.busy) { Text("Third-party notices") }
-    }
-    if (forget) Confirmation("Forget this pairing?", { forget = false }, { forget = false; controller.forget() }, !state.busy) {
-        Text("Delete this phone’s saved relationship and AndroidKeyStore channel identity. This does not delete your account or revoke the phone on the Mac.")
-        Text("Revoke the phone in Notify on your Mac too. Connecting again requires a new in-person pairing.")
-        Text("If notifications were enabled, their routing must be removed while signed in before this key is deleted.")
-    }
-}
 @Composable private fun Notices(text: String, close: () -> Unit) {
     Page { TextButton(onClick = close) { Text("Back to Settings") }; Heading("Third-party notices"); SelectionContainer { Text(text) } }
 }
-@Composable private fun Confirmation(title: String, cancel: () -> Unit, confirm: () -> Unit, enabled: Boolean,
+@Composable internal fun Confirmation(title: String, cancel: () -> Unit, confirm: () -> Unit, enabled: Boolean,
     content: @Composable ColumnScope.() -> Unit) {
     AlertDialog(onDismissRequest = cancel, title = { Text(title) },
         text = { Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),

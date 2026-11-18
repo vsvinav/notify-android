@@ -3,7 +3,7 @@ package app.notify.android.notifications
 data class NotificationState(
     val consent: Boolean = false, val permission: Boolean = false,
     val channel: Boolean = false, val registered: Boolean = false,
-    val cleanupPending: Boolean = false,
+    val cleanupPending: Boolean = false, val setupOffered: Boolean = false,
 ) {
     val enabled get() = consent && permission && channel && registered
     val description get() = when {

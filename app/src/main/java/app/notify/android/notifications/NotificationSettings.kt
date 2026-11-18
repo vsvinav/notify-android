@@ -29,9 +29,11 @@ class NotificationSettings(context: Context) {
             NotificationManager.IMPORTANCE_NONE,
         registered = prefs.getString("registered", "")?.let { it.isNotEmpty() && it == prefs.getString("tokenHash", "") } == true,
         cleanupPending = !prefs.getBoolean("consent", false) && prefs.getBoolean("routePossible", false),
+        setupOffered = prefs.getBoolean("setupOffered", false),
     )
     fun permissionGranted() = Build.VERSION.SDK_INT < 33 ||
         context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    fun markSetupOffered() = save(prefs.edit().putBoolean("setupOffered", true))
 
     fun createChannel() {
         val channel = NotificationChannel(CHANNEL, "Mac attention", NotificationManager.IMPORTANCE_DEFAULT).apply {

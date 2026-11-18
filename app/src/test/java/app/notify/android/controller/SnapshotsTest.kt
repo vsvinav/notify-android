@@ -3,12 +3,90 @@ package app.notify.android.controller
 import app.notify.android.remote.AnswerDraft
 import app.notify.android.remote.RequestInbox
 import app.notify.android.remote.ReplyDecision
+import app.notify.android.remote.RemoteStatus
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 
 class SnapshotsTest {
+    @Test fun workspaceRetainsReportedHierarchyAndCountsButRejectsMalformedParentClaims() {
+        val value = JSONObject("""{"connected":true,"sessions":[{"id":"s","name":"Build","project":"Notify","agent":"copilot","state":"working","connected":true,"ticket":"t","runningCount":4,"idleCount":2,"capabilities":{"steering":true,"subagentChat":true,"subagentStop":true}}],"detail":{"sessionID":"s","ticket":"t","team":{"agents":[{"id":"a","name":"Review","status":"running","task":"Check changes","model":"reported-model","parentKnown":true}],"runningCount":4,"idleCount":2,"truncated":true},"activity":[],"controls":[],"truncated":true}}""")
+        val snapshot = Snapshots.workspace(value)
+        assertEquals(4, snapshot.sessions.single().runningCount)
+        assertEquals("Check changes", snapshot.detail!!.agents.single().task)
+        assertEquals("reported-model", snapshot.detail!!.agents.single().model)
+        assertTrue(snapshot.detail!!.agents.single().parentKnown)
+        val agent = value.getJSONObject("detail").getJSONObject("team").getJSONArray("agents").getJSONObject(0)
+        agent.put("parentAgentID", "a")
+        assertThrows(IllegalArgumentException::class.java) { Snapshots.workspace(value) }
+        agent.put("parentAgentID", "other").put("parentKnown", false)
+        assertThrows(IllegalArgumentException::class.java) { Snapshots.workspace(value) }
+    }
+
     private val wire = """{"connected":true,"requests":[{"ticket":"t","sessionID":"s","sessionName":"Build","fields":[{"label":"Command","value":"echo 'literal'","presentation":"code"}],"request":{"id":"r","kind":"question","title":"Where?","questions":[{"id":"q","text":"Destination","multiple":false,"allowFreeform":true,"options":[{"label":"First"}]}]}}]}"""
+
+    @Test fun productionSnapshotUpdateKeepsFreshInboxLiveBetweenClockTicks() {
+        val state = ControllerState(status = RemoteStatus("connected", "Encrypted channel connected."),
+            foreground = true, now = 1000)
+        val updated = state.receiveRequests(Snapshots.requests(JSONObject(wire)), 1100)
+        assertTrue("A new live snapshot must not await the next clock tick", updated.live)
+        assertEquals(1100L, updated.now)
+        assertTrue(updated.inbox.isLive(updated.now))
+        assertEquals(state.status, updated.status)
+    }
+
+    @Test fun productionSnapshotUpdateRetainsFutureAndExpiryReplyGuards() {
+        val updated = ControllerState(status = RemoteStatus("connected", ""), foreground = true, now = 1000)
+            .receiveRequests(Snapshots.requests(JSONObject(wire)), 1100)
+        assertTrue(updated.copy(now = 11099).live)
+        for (now in listOf(1099L, 11100L)) {
+            val unavailable = updated.copy(now = now)
+            assertFalse(unavailable.live)
+            assertThrows(IllegalStateException::class.java) {
+                unavailable.inbox.prepare("t", ReplyDecision.Deny, unavailable.now)
+            }
+        }
+    }
+
+    @Test fun productionSnapshotUpdateDoesNotOverrideDisconnectedOrBackgroundState() {
+        val snapshot = Snapshots.requests(JSONObject(wire))
+        val connected = ControllerState(status = RemoteStatus("connected", ""), foreground = true, now = 1000)
+            .receiveRequests(snapshot, 1100)
+        val unavailable = connected.receiveRequests(snapshot.copy(connected = false), 1200)
+        assertFalse(unavailable.live)
+        assertFalse(unavailable.inbox.connected)
+        assertEquals(connected.status, unavailable.status)
+        assertThrows(IllegalStateException::class.java) {
+            unavailable.inbox.prepare("t", ReplyDecision.Deny, unavailable.now)
+        }
+        assertFalse(connected.copy(foreground = false).receiveRequests(snapshot, 1300).live)
+        assertFalse(connected.copy(status = RemoteStatus("connecting", "")).receiveRequests(snapshot, 1300).live)
+    }
+
+    @Test fun productionWorkspaceUpdateKeepsFreshControlsAndReviewBetweenClockTicks() {
+        val snapshot = WorkspaceSnapshot(true,
+            listOf(Session("s", "Build", "Notify", "copilot", "working", true, "t", Capabilities(true, true, true))),
+            SessionDetail("s", "t", emptyList(), emptyList(), emptyList()))
+        val review = ControlCommand("control", "s", "t", "stop", "", "")
+        val state = ControllerState(now = 1100, workspace = WorkspaceState(sessionID = "s"), controlReview = review)
+        val updated = state.receiveWorkspace(snapshot, 1200)
+        assertNull("A fresh workspace must not await the next clock tick", updated.workspace.unavailable("stop", updated.now))
+        assertEquals(1200L, updated.now)
+        assertEquals(review, updated.controlReview)
+        for (now in listOf(1199L, 11200L)) {
+            assertNotNull(updated.workspace.unavailable("stop", now))
+            assertThrows(IllegalStateException::class.java) { updated.workspace.prepare("stop", now) }
+        }
+        val offline = updated.receiveWorkspace(snapshot.copy(connected = false), 1300)
+        assertNotNull(offline.workspace.unavailable("stop", offline.now))
+        assertNull(offline.controlReview)
+        val replaced = snapshot.copy(sessions = snapshot.sessions.map { it.copy(ticket = "replacement") })
+        assertNull(updated.receiveWorkspace(replaced, 1300).controlReview)
+        val unsupported = snapshot.copy(sessions = snapshot.sessions.map {
+            it.copy(capabilities = Capabilities(false, false, false))
+        })
+        assertNull(updated.receiveWorkspace(unsupported, 1300).controlReview)
+    }
 
     @Test fun actualRequestWireKeepsExactEvidenceAndRepliesAcrossMemberReordering() {
         val snapshot = Snapshots.requests(JSONObject(wire))
