@@ -41,6 +41,21 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class SessionLayoutTest : InstrumentationTestCase() {
+    fun testComposerRemainsEditableWhileDeliveryIsBlockedOrBusy() {
+        fixture(content = { state, controller, _ ->
+            val workspace = state.workspace
+            val command = workspace.prepare("queue", state.now)
+            Sessions(state.copy(busy = true, workspace = workspace.sending(command).uncertain(command)),
+                controller, mutableMapOf(), mutableMapOf())
+        }) {
+            var editor: AccessibilityNodeInfo? = node("Layout regression draft")
+            while (editor != null && editor.packageName?.toString() == instrumentation.targetContext.packageName) {
+                assertTrue("Sending can be blocked without disabling typing and deletion", editor.isEnabled)
+                editor = editor.parent
+            }
+        }
+    }
+
     fun testNativeAgentsLight() = agentsFixture(PhoneAppearance.Light)
 
     fun testNativeAgentsDark() = agentsFixture(PhoneAppearance.Dark)

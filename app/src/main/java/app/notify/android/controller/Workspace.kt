@@ -44,17 +44,20 @@ data class SessionDetail(val sessionID: String, val ticket: String, val agents: 
 data class WorkspaceSnapshot(val connected: Boolean, val sessions: List<Session>, val detail: SessionDetail?,
     val truncated: Boolean = false, val error: String = "")
 data class Target(val sessionID: String, val ticket: String, val agentID: String)
+data class DraftTarget(val sessionID: String, val agentID: String)
+data class MessageDraft(val text: String, val revision: String = UUID.randomUUID().toString())
 data class ControlCommand(val id: String, val sessionID: String, val ticket: String, val action: String,
     val text: String, val agentID: String, val enabled: Boolean? = null, val policyTicket: String? = null,
     val offTicket: String? = null, val managementTicket: String? = null, val creation: SubagentCreation? = null,
     val creationRevision: Long? = null, val sessionTicket: String? = null, val rgb: Int? = null,
     val targetID: String? = null, val targetTicket: String? = null, val sourceID: String? = null,
-    val resumeAuthority: ResumeAuthority? = null) {
+    val resumeAuthority: ResumeAuthority? = null, val draftRevision: String? = null) {
     val isPolicy get() = action == "dangerous_auto_yes"
     val isManagement get() = action in setOf("create_subagent", "remove_subagent", "stop_idle_subagents")
     val isSessionAction get() = action in sessionActionStatuses
     val sessionActionKey get() = "$sourceID\u0000$action"
     val target get() = Target(sessionID, ticket, agentID)
+    val draftTarget get() = DraftTarget(sessionID, agentID)
     fun json() = JSONObject().put("id", id).put("sessionID", sessionID).put("ticket", ticket)
         .put("action", action).put("text", text).also {
             if (agentID.isNotEmpty()) it.put("agentID", agentID)
@@ -71,7 +74,7 @@ data class ControlDelivery(val commandID: String, val status: String, val blocke
 data class SessionActionDelivery(val command: ControlCommand, val status: String, val blocked: Boolean)
 data class WorkspaceState(
     val snapshot: WorkspaceSnapshot? = null, val sessionID: String? = null, val agentID: String = "",
-    val receivedAt: Long? = null, val drafts: Map<Target, String> = emptyMap(),
+    val receivedAt: Long? = null, val drafts: Map<DraftTarget, MessageDraft> = emptyMap(),
     val deliveries: Map<Target, ControlDelivery> = emptyMap(),
     val policyDeliveries: Map<Target, ControlDelivery> = emptyMap(),
     val creationDrafts: Map<String, CreationDraft> = emptyMap(),
@@ -81,7 +84,8 @@ data class WorkspaceState(
     val session get() = snapshot?.sessions?.singleOrNull { it.id == sessionID }
     val detail get() = snapshot?.detail?.takeIf { it.sessionID == sessionID && it.ticket == session?.ticket }
     val target get() = session?.let { Target(it.id, it.ticket, agentID) }
-    val draft get() = drafts[target] ?: ""
+    val draftTarget get() = session?.let { DraftTarget(it.id, agentID) }
+    val draft get() = drafts[draftTarget]?.text ?: ""
     val delivery get() = deliveries[target]
     val policyDelivery get() = session?.let { policyDeliveries[Target(it.id, it.ticket, "")] }
     val creationDraft get() = creationDrafts[sessionID] ?: CreationDraft()
@@ -111,7 +115,7 @@ data class WorkspaceState(
             ordered.sessions.singleOrNull { it.agent == session?.agent && it.sessionActions?.sourceID == source }?.id
         } else null
         return copy(snapshot = ordered, receivedAt = now, sessionID = alias ?: sessionID,
-            drafts = drafts.filterKeys { current[it.sessionID] == it.ticket },
+            drafts = drafts.filterKeys { it.sessionID in current },
             policyDeliveries = policyDeliveries.filter { (target, delivery) ->
                 current[target.sessionID] == target.ticket && (delivery.blocked || delivery.policyRevision == null ||
                     ordered.sessions.singleOrNull { it.id == target.sessionID }?.dangerousAutoYes?.revision == delivery.policyRevision)
@@ -119,10 +123,11 @@ data class WorkspaceState(
             deliveries = retained)
     }
     fun edit(text: String): WorkspaceState {
-        val target = checkNotNull(target) { "Select a current session first." }
+        val target = checkNotNull(draftTarget) { "Select a current session first." }
         require(text.length <= 16_000) { "Message exceeds 16,000 characters." }
-        val updated = if (text.isEmpty()) drafts - target else drafts + (target to text)
-        require(updated.size <= 100 && updated.values.sumOf { it.toByteArray().size } <= 524_288) {
+        if (text == draft) return this
+        val updated = if (text.isEmpty()) drafts - target else drafts + (target to MessageDraft(text))
+        require(updated.size <= 100 && updated.values.sumOf { it.text.toByteArray().size } <= 524_288) {
             "Phone draft storage is full. Clear an unused draft."
         }
         return copy(drafts = updated)
@@ -171,7 +176,7 @@ data class WorkspaceState(
         check(unavailable(action, now) == null) { unavailable(action, now)!! }
         require(action == "stop" || draft.isNotBlank()) { "Write a message for this agent." }
         return ControlCommand(UUID.randomUUID().toString(), sessionID!!, session!!.ticket, action,
-            if (action == "stop") "" else draft, agentID)
+            if (action == "stop") "" else draft, agentID, draftRevision = drafts[draftTarget]?.revision)
     }
     fun validate(command: ControlCommand, now: Long) {
         if (command.isSessionAction) {
@@ -211,7 +216,9 @@ data class WorkspaceState(
         check(target == command.target && unavailable(command.action, now) == null) {
             "The session, target, or connection changed. Review it again; nothing was sent."
         }
-        check(command.action == "stop" || draft == command.text) { "The message changed. Review it again." }
+        check(command.action == "stop" || draft == command.text && drafts[draftTarget]?.revision == command.draftRevision) {
+            "The message changed. Review it again."
+        }
     }
     fun sending(command: ControlCommand): WorkspaceState {
         val pending = ControlDelivery(command.id, "Waiting for Mac acknowledgment…", true,
@@ -270,7 +277,8 @@ data class WorkspaceState(
         require(status in setOf("queued", "received", "stopped")) { "The Mac did not confirm this control." }
         // RPC UUID correlation is enforced by RemoteConnection; the Mac creates a distinct receipt UUID.
         return copy(deliveries = deliveries + (command.target to ControlDelivery(command.id, status, false, commandID)),
-            drafts = if (command.action != "stop" && drafts[command.target] == command.text) drafts - command.target else drafts)
+            drafts = if (command.action != "stop" && drafts[command.draftTarget]?.text == command.text &&
+                drafts[command.draftTarget]?.revision == command.draftRevision) drafts - command.draftTarget else drafts)
     }
     fun sessionActionUnavailable(action: String, now: Long, moveTarget: String? = null): String? {
         if (receivedAt == null || now < receivedAt || now - receivedAt >= 10_000 || snapshot?.connected != true)

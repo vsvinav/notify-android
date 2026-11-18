@@ -603,7 +603,7 @@ private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                         OutlinedTextField(workspace.draft, controller::draft,
                             label = { Text(if (workspace.agentID.isEmpty()) "Message main agent" else "Message selected helper") },
-                            enabled = !state.busy && target != null && workspace.delivery?.blocked != true,
+                            enabled = target != null,
                             modifier = Modifier.fillMaxWidth(), maxLines = if (compact) 2 else 4)
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp),

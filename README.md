@@ -24,12 +24,18 @@ and access to the compatible Notify internet service.
 For updates, install the new APK over Notify without uninstalling or clearing its
 data. Updates must use the same signing identity to retain the saved pairing.
 
-**Current prerelease:** **[0.3.0 beta](https://github.com/vsvinav/notify-android/releases/tag/v0.3.0-beta.1)**.
+**Current prerelease:** **[0.3.1 beta](https://github.com/vsvinav/notify-android/releases/tag/v0.3.1-beta.1)**.
 The release includes the installable APK and its SHA-256 checksum, QR scanning,
 reconnect improvements, Mac-style agents, the matching amber lightning icon and
 the controls below. This is an agent-tested preview, not full physical-device
 acceptance; read its known limitations before installing. New session controls
 require matching updated Mac/helper builds.
+
+0.3.1 fixes missing foreground alerts and preserves editable drafts during
+reconnection or uncertain delivery. With Mac beta 5/build 11, background alerts
+no longer depend on an open phone conversation. An installed-build, real-internet
+locked-phone check confirmed notification delivery and physical vibration.
+This is bounded acceptance, not a guarantee of delivery on every device/network.
 
 ## Native screenshots
 
@@ -161,6 +167,11 @@ kept below them. At very short heights or large font sizes, the surroundings scr
 instead and history is available through **Show conversation**, so the editor
 cannot be squeezed to zero height. Drafts and
 conversation positions remain tied to their exact targets during this app session.
+Connection refreshes no longer discard drafts. The editor remains usable while
+disconnected, sending, or awaiting an uncertain result; Send still requires a
+fresh supported target and a safe delivery state. An acknowledgment clears only
+the exact draft revision sent, never text you edited afterward. Drafts are not
+stored across app restarts, and this release does not add offline history storage.
 Changing filters never selects a different session.
 
 ### Session settings (0.3.0 beta)
@@ -316,11 +327,15 @@ No request, chat, command, approval or Mac/account identity is included. A tap
 opens Notify; current encrypted state and the existing confirmation checks are
 required before any action. Notifications expire after two minutes, are
 deduplicated/rate-limited and are best effort—not a request inbox or delivery receipt.
-The current receiver deliberately suppresses system alerts while Notify is open
-and limits background alerts to one per 30 seconds. An enabled status does not
-prove that a push arrived or that the phone vibrated. Physical background
-delivery and vibration are required release-acceptance checks; sender validation
-alone is insufficient.
+Alerts can appear while Notify is open or backgrounded. The service retains its
+30-second limit; the Mac coalesces later requests and retries a failed or deferred
+nudge for up to two minutes while work remains waiting. Android does not add a
+second cooldown that could discard a delayed distinct event. The Mac must be
+awake, online, and have internet access enabled again after each Notify launch.
+An enabled status or provider acceptance alone does not prove delivery. For 0.3.1
+with Mac build 11, a real-internet locked-phone check confirmed both the alert and
+physical vibration. Sound, other phone/network configurations, and sustained
+delivery remain separate checks.
 
 The notification permission callback stays active while the Mac reconnects.
 An explicit Enable request remains bound to the same signed-in account and saved

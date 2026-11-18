@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.util.Log
 import app.notify.android.MainActivity
 import app.notify.android.R
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -23,9 +24,10 @@ class NotifyMessagingService : FirebaseMessagingService() {
         val now = System.currentTimeMillis()
         val id = Attention.accept(message.data, now, seen) ?: return
         val updated = (seen.toList().takeLast(7) + id).toSet()
-        if (!prefs.edit().putStringSet("seen", updated).commit()) return
-        if (NotificationSettings.foreground || now - prefs.getLong("lastAlert", 0) < 30000) return
-        if (!prefs.edit().putLong("lastAlert", now).commit()) return
+        if (!prefs.edit().putStringSet("seen", updated).commit()) {
+            Log.e("NotifyAlerts", "Could not save notification delivery state. Check phone storage.")
+            return
+        }
         settings.createChannel()
         val channelID = settings.channelID
         val tap = PendingIntent.getActivity(this, 0,
@@ -43,6 +45,8 @@ class NotifyMessagingService : FirebaseMessagingService() {
         try {
             if (settings.state().enabled)
                 getSystemService(NotificationManager::class.java).notify(NotificationSettings.NOTIFICATION_ID, notification)
-        } catch (_: SecurityException) { /* Permission can be revoked between checking and posting. */ }
+        } catch (_: SecurityException) {
+            Log.w("NotifyAlerts", "Notification permission changed before the alert could be posted.")
+        }
     }
 }
