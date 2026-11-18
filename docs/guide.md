@@ -167,11 +167,13 @@ camera, notification or control behavior.
    through your signed-in account. Alerts are not shown as On until permission,
    channel availability and registration are confirmed.
 
-**After restarting Notify on the Mac:** turn **Enable internet** on again.
-Internet access starts off on every Mac app launch; same-Wi-Fi access being on
-does not enable the Android internet connection. If the phone remains Connecting
-or Waiting for Mac, check this switch before trying Reconnect. Do not reset or
-re-pair solely because the Mac's internet access was off.
+**After restarting Notify on the Mac:** Mac build 14 and later remembers your
+**Enable internet** choice and reconnects when it is On. First use is Off;
+enable it once after updating from an older Mac build. Explicit Off stays Off.
+Earlier builds require enabling it after every launch. Same-Wi-Fi access being
+on does not enable the Android internet connection. If the phone remains
+Connecting or Waiting for Mac, check this switch and any Mac connection error
+before trying Reconnect. Do not reset or re-pair solely because access was off.
 
 The QR supplies the invitation and pinned Mac key. This build supports only
 `https://notify-remote.onrender.com`; a QR for another service is rejected and
@@ -398,7 +400,7 @@ Alerts can appear while Notify is open or backgrounded. The service retains its
 30-second limit; the Mac coalesces later requests and retries a failed or deferred
 nudge for up to two minutes while work remains waiting. Android does not add a
 second cooldown that could discard a delayed distinct event. The Mac must be
-awake, online, and have internet access enabled again after each Notify launch.
+awake, online, running Notify, and have internet access enabled.
 An enabled status or provider acceptance alone does not prove delivery. For 0.3.1
 with Mac build 11, a real-internet locked-phone check confirmed both the alert and
 physical vibration. Sound, other phone/network configurations, and sustained
