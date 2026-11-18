@@ -247,7 +247,7 @@ class WorkspaceTest {
         assertThrows(IllegalStateException::class.java) { current.prepare("queue", 10_100) }
         assertThrows(IllegalStateException::class.java) { current.prepare("interrupt", 101) }
     }
-    @Test fun uncertainDeliveryBlocksReplayAndTicketChangesClearOnlyItsDraft() {
+    @Test fun uncertainDeliveryBlocksReplayAndTicketChangesPreserveItsDraft() {
         val state = workspace().edit("hello")
         val command = state.prepare("queue", 101)
         val pending = state.sending(command).uncertain(command)
@@ -255,7 +255,7 @@ class WorkspaceTest {
         val refreshed = pending.receive(state.snapshot!!, 200)
         assertThrows(IllegalStateException::class.java) { refreshed.prepare("queue", 201) }
         val changed = state.receive(state.snapshot.copy(sessions = listOf(session.copy(ticket = "new"))), 200)
-        assertEquals("", changed.draft)
+        assertEquals("hello", changed.draft)
     }
     @Test fun equivalentSnapshotsKeepDraftAndRpcAcknowledgmentTracksDistinctNativeReceipt() {
         val state = workspace().edit("child draft").select("s", "").edit("main draft").select("s", "child")
@@ -268,6 +268,29 @@ class WorkspaceTest {
         assertEquals("", acknowledged.draft)
         assertEquals("native-receipt", acknowledged.delivery?.receiptID)
         assertEquals("main draft", refreshed.select("s", "").draft)
+    }
+    @Test fun refreshedAuthorityDoesNotEraseAnUnsentConversationDraft() {
+        val state = workspace().edit("I am still typing")
+        val reviewed = state.prepare("queue", 101)
+        val refreshed = state.receive(state.snapshot!!.copy(
+            sessions = listOf(session.copy(ticket = "new")),
+            detail = detail.copy(ticket = "new")), 200)
+        assertEquals("I am still typing", refreshed.draft)
+        assertEquals("I am still typin", refreshed.edit("I am still typin").draft)
+        assertThrows(IllegalStateException::class.java) { refreshed.validate(reviewed, 201) }
+    }
+
+    @Test fun acknowledgmentDoesNotEraseADraftEditedBackToTheSameText() {
+        val state = workspace().edit("hello")
+        val command = state.prepare("queue", 101)
+        val edited = state.sending(command).edit("hello again").edit("hello")
+        assertEquals("hello", edited.acknowledge(command, "native-receipt", "received").draft)
+    }
+    @Test fun acknowledgmentDoesNotEraseADraftClearedAndRetyped() {
+        val state = workspace().edit("hello")
+        val command = state.prepare("queue", 101)
+        val edited = state.sending(command).edit("").edit("hello")
+        assertEquals("hello", edited.acknowledge(command, "native-receipt", "received").draft)
     }
     @Test fun disconnectedSnapshotKeepsConversationAndDraftButDisablesControls() {
         val state = workspace().edit("keep me")
