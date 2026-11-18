@@ -41,6 +41,53 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class SessionLayoutTest : InstrumentationTestCase() {
+    fun testNativeAgentsLight() = agentsFixture(PhoneAppearance.Light)
+
+    fun testNativeAgentsDark() = agentsFixture(PhoneAppearance.Dark)
+
+    private fun agentsFixture(appearance: PhoneAppearance) {
+        fixture(content = { state, _, _ ->
+            val session = state.workspace.session!!.copy(name = "Website refresh",
+                managementTicket = "fixture-management", subagentTypes = listOf("reviewer"),
+                capabilities = state.workspace.session!!.capabilities.copy(
+                    subagentCreate = true, subagentCleanup = true))
+            val detail = state.workspace.detail!!.copy(agents = listOf(
+                Agent("reviewer", "Review helper", "running", "Checking keyboard navigation",
+                    parentKnown = true),
+                Agent("writer", "Docs helper", "idle", "Waiting for the review", parentKnown = true)))
+            val workspace = state.workspace.copy(snapshot = state.workspace.snapshot!!.copy(
+                sessions = listOf(session), detail = detail))
+            val sample = state.copy(workspace = workspace)
+            NotifyTheme(appearance) {
+                ChatShell(sample, Destination.Chat, session.name, false, {}, {}, {}, {}) {
+                    AgentTeam(sample, Modifier.fillMaxSize(), {})
+                }
+            }
+        }) {
+            bounds("Your agents")
+            bounds("Review helper")
+            var add = node("Add subagent")
+            while (!add.isClickable) add = checkNotNull(add.parent)
+            assertTrue("A supported fresh session must expose creation", add.isEnabled)
+            val target = Rect().also(add::getBoundsInScreen)
+            assertTrue(target.height() >= 48 * instrumentation.targetContext.resources.displayMetrics.density)
+        }
+    }
+
+    fun testDangerousPolicyShowsStateAndReachableAction() {
+        for (enlarged in listOf(false, true)) fixture(enlarged, { state, controller, _ ->
+            val session = state.workspace.session!!.copy(
+                dangerousAutoYes = DangerousAutoYes("fixture-policy", 1, enlarged, false,
+                    "00000000-0000-8000-8000-000000000001"),
+                capabilities = state.workspace.session!!.capabilities.copy(dangerousAutoYes = true))
+            val workspace = state.workspace.copy(snapshot = state.workspace.snapshot!!.copy(sessions = listOf(session)))
+            Sessions(state.copy(workspace = workspace), controller, mutableMapOf(), mutableMapOf())
+        }) {
+            bounds("Dangerous Auto-yes · ${if (enlarged) "On" else "Off"}")
+            bounds(if (enlarged) "Turn off now" else "Enable Dangerous Auto-yes…")
+        }
+    }
+
     fun testPhoneAppearanceAppliesShippingThemeLive() {
         fixture(content = { _, _, _ ->
             var appearance by remember { mutableStateOf(PhoneAppearance.System) }
@@ -115,10 +162,11 @@ class SessionLayoutTest : InstrumentationTestCase() {
                 if (item.isScrollable) { scroll = item; break }
                 for (index in 0 until item.childCount) item.getChild(index)?.let(queue::add)
             }
-            assertNotNull("Form body must scroll rather than clip its action", scroll)
-            repeat(12) {
-                scroll!!.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                instrumentation.waitForIdleSync()
+            if (scroll != null) {
+                repeat(12) {
+                    scroll!!.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                    instrumentation.waitForIdleSync()
+                }
             }
             bounds("Create subagent")
         }

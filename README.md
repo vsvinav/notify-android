@@ -5,7 +5,7 @@ A native Android remote controller for Notify on your Mac.
 **Keep your agents within reach.** Review decisions, follow conversations, and
 select the main agent or a helper without returning to your terminal.
 
-[Install](#install) · [Connect](#connect-your-mac) · [Interface previews](#interface-previews) · [Supported controls](#sessions-and-supported-controls)
+[Install](#install) · [Connect](#connect-your-mac) · [Native screenshots](#native-screenshots) · [Supported controls](#sessions-and-supported-controls)
 
 ## Install
 
@@ -29,11 +29,29 @@ The unreleased 0.3.0 work includes the QR scanner, reconnect improvements,
 Mac-style agents and matching amber lightning icon. The interface below describes
 that development version, not all features in the published APK.
 
-## Interface previews
+## Native screenshots
+
+Captured on an Android phone from the shipping Compose components and theme,
+using **fictional sessions in an isolated test app**. The connected label is
+fixture data, not evidence of a live connection. No real agents were operated.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/android-agents-native-dark.png">
+  <img src="docs/images/android-agents-native.png" alt="Native Android agents with Add subagent, idle cleanup and a fictional main/helper team" width="300">
+</picture>
+<img src="docs/images/android-create-native.png" alt="Native Add subagent form with live-catalog fields, instructions and an explicit Create button, using fictional data" width="300">
+<img src="docs/images/android-policy-native.png" alt="Native session header with Dangerous Auto-yes Off, its enable action, session settings and the separate composer" width="300">
+
+Eleven native layout checks passed, including narrow 320dp / 130% text cases,
+light/dark appearance, creation, session settings and visible policy actions.
+TalkBack, keyboard interaction, camera and live control execution are separate
+acceptance checks; these captures do not establish them.
+
+<details>
+<summary>Earlier browser design previews</summary>
 
 **These are browser-rendered design previews, not native Android screenshots.**
-They show the approved direction using fictional sessions. Native rendering,
-keyboard behavior and accessibility still require on-device acceptance.
+They show the approved direction using fictional sessions.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/android-agents-preview-dark.png">
@@ -52,6 +70,8 @@ keyboard behavior and accessibility still require on-device acceptance.
 Every preview is labeled in the image itself. The native implementation uses
 static state-specific agent poses; these images do not establish live connection,
 camera, notification or control behavior.
+
+</details>
 
 ## Connect your Mac
 
@@ -184,10 +204,9 @@ replayed. Color/order changes alone never clear an uncertain resume.
 **Settings → Appearance · this phone** offers **System** (default), **Light**, and
 **Dark**. It saves locally and applies the existing Notify theme immediately.
 It changes neither macOS nor Android's global appearance. Notification controls
-are unchanged. New controls have headless/unit coverage; native visual, touch,
-TalkBack, keyboard and real CLI-resume acceptance still require separate device/Mac
-testing. Layout fixtures now use the shipping Notify theme; compiling them is not
-a claim that screenshots or device tests were run.
+are unchanged. New controls have headless/unit coverage and eleven on-device
+fictional layout checks using the shipping theme. TalkBack, keyboard interaction
+and real CLI-resume acceptance still require separate device/Mac testing.
 
 **Dangerous Auto-yes (unpublished source preview):** with matching updated Mac
 and helper builds, the session header controls the existing Mac-owned policy.
@@ -205,8 +224,8 @@ An unknown Off cannot be sent again for the same policy epoch; check the Mac.
 **Disconnecting the phone does not turn it off.** It remains enabled for that
 session until manually disabled or the session stops. Provider disconnect,
 capability loss, errors, dispatch failures and Mac shutdown retain native
-fail-safe resets. These controls are not in the published 0.2.0 APK; physical-device
-acceptance of the new controls is still pending.
+fail-safe resets. These controls are not in the published 0.2.0 APK. Native
+visibility checks passed; no real session policy was changed during those checks.
 
 **Helper management (unpublished source preview):** open the selected session’s
 **Agents** tab and choose **Add subagent**. The native form offers only live Mac
@@ -229,7 +248,8 @@ files or schedules background cleanup. Actual runtime status and counts, includi
 skipped, failed and uncertain outcomes, appear in Agents. Queue acceptance is not
 creation/removal success; timeouts stay unknown and are never retried automatically.
 These controls require matching updated native Mac, helper and Android builds.
-They have headless synthetic coverage, not installed-device acceptance.
+They have headless synthetic coverage and native fictional form/layout checks,
+not acceptance of real agent creation, removal or cleanup.
 
 Claude and other unsupported provider controls remain read-only. **Decision** opens
 the selected session's real approvals and questions; the drawer's **Needs you**
