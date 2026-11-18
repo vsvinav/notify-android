@@ -557,8 +557,9 @@ private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
             val scrollLayout = composerHeight == null
             val presentation = targetPresentation(state)
             val targetName = presentation.name
+            val primaryAction = composerAction(workspace)
             val unavailable = if (!state.live) "Waiting for fresh Mac updates. Your draft stays here; nothing will be sent."
-                else workspace.unavailable("queue", state.now)
+                else workspace.unavailable(primaryAction.action, state.now)
             Column(Modifier.fillMaxSize().then(if (scrollLayout) Modifier.verticalScroll(rememberScrollState()) else Modifier)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHighest) {
@@ -577,6 +578,14 @@ private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
                             DropdownMenuItem(text = { Text(if (tools) "Show conversation" else "Tools & thinking") },
                                 onClick = { tools = !tools; showHistory = true; actions = false })
                             DropdownMenuItem(text = { Text("Open sessions") }, onClick = { actions = false; openSessions() })
+                            if (workspace.agentID.isEmpty() && primaryAction.action == "send") DropdownMenuItem(text = {
+                                Column {
+                                    Text("Queue draft")
+                                    Text("Wait until the current turn finishes.", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }, onClick = { actions = false; controller.prepareControl("queue") },
+                                enabled = state.live && !state.busy && workspace.draft.isNotBlank() &&
+                                    workspace.unavailable("queue", state.now) == null)
                             if (workspace.agentID.isEmpty()) DropdownMenuItem(text = {
                                 Column {
                                     Text("Interrupt main with draft")
@@ -617,6 +626,9 @@ private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
                     Column(if (scrollLayout) Modifier else Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (workspace.agentID.isNotEmpty()) TextButton(onClick = openAgents) { Text("Change agent") }
+                        if (workspace.agentID.isEmpty() && primaryAction.action == "queue") Text(
+                            "Queue waits for the current turn. For Send, update the Mac/helper and reload this session’s Notify extension.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         workspace.delivery?.let { Supporting(it.status) }
                         if (unavailable != null) Text(unavailable, style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -630,7 +642,9 @@ private fun SessionChat(state: ControllerState, controller: ControllerViewModel,
                         verticalAlignment = Alignment.CenterVertically) {
                         Text("Enter adds a new line", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Action("Send", !state.busy && unavailable == null && workspace.draft.isNotBlank()) { controller.prepareControl("queue") }
+                        Action(primaryAction.label, !state.busy && unavailable == null && workspace.draft.isNotBlank()) {
+                            controller.prepareControl(primaryAction.action)
+                        }
                     }
                 }
             }

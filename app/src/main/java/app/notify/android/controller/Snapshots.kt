@@ -45,6 +45,7 @@ object Snapshots {
         val policyControls = value.bool("dangerousAutoYesControl", false) && value.bool("dangerousAutoYesOffEpoch", false)
         val managementControls = value.bool("subagentManagementControl", false)
         val sessionControls = value.bool("sessionActionsControl", false)
+        val immediateControls = value.bool("steeringImmediateControl", false)
         val sessions = value.objects("sessions", 256).map { s ->
             val c = s.getJSONObject("capabilities")
             val policy = if (!s.has("dangerousAutoYes")) null else policy(s.getJSONObject("dangerousAutoYes"))
@@ -61,7 +62,8 @@ object Snapshots {
             Session(s.text("id", 128, true), s.text("name", 2048), s.text("project", 2048), s.text("agent", 256),
                 s.text("state", 256), s.bool("connected"), s.text("ticket", 256),
                 Capabilities(c.bool("steering"), c.bool("subagentChat"), c.bool("subagentStop"), capable && policyControls && policy?.hasOffAuthority == true,
-                    create && managementControls, remove && managementControls, cleanup && managementControls),
+                    create && managementControls, remove && managementControls, cleanup && managementControls,
+                    c.bool("steeringImmediate", false) && immediateControls),
                 s.reportedCount("runningCount"), s.reportedCount("idleCount"), policy, managementTicket, types, models,
                 if (s.has("color")) s.text("color", 7).also { require(it.matches(Regex("#[a-fA-F0-9]{6}"))) }.drop(1).toInt(16) else null,
                 if (s.has("sessionActions")) sessionActions(s.getJSONObject("sessionActions"), sessionControls) else null)

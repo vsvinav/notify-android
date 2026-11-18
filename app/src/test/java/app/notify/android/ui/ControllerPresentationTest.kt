@@ -7,6 +7,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ControllerPresentationTest {
+    @Test fun primaryComposerUsesSendOnlyForCapableMainAndKeepsHelpersExact() {
+        val main = connected().workspace
+        assertEquals(ComposerAction("queue", "Queue"), composerAction(main))
+        val capable = main.receive(snapshot.copy(sessions = listOf(session.copy(
+            capabilities = session.capabilities.copy(steeringImmediate = true)))), 101)
+        assertEquals(ComposerAction("send", "Send"), composerAction(capable))
+        for (root in listOf(main, capable)) {
+            val helper = root.select("s", "helper")
+            assertEquals(ComposerAction("queue", "Send"), composerAction(helper))
+            assertEquals("helper", helper.agentID)
+        }
+        assertEquals(ComposerAction("queue", "Queue"), composerAction(capable.receive(snapshot, 102)))
+    }
+
     @Test fun savedReaderIsExplicitAndReachableWithoutServiceSignIn() {
         val history = ConversationHistory(listOf(CachedConversation(DraftTarget("s", ""), "Build", "Main",
             1, false, listOf(CachedMessage("assistant", "", "Saved reply", "1")))))

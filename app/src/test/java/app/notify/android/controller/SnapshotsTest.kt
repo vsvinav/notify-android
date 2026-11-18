@@ -9,6 +9,26 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SnapshotsTest {
+    @Test fun immediateSteeringRequiresBothStrictBooleanAdvertisements() {
+        val wire = JSONObject("""{"connected":true,"sessions":[{"id":"s","name":"Build","project":"","agent":"copilot","state":"working","connected":true,"ticket":"t","capabilities":{"steering":true,"subagentChat":true,"subagentStop":true}}],"detail":{"sessionID":"s","ticket":"t","activity":[],"controls":[]}}""")
+        val capability = wire.getJSONArray("sessions").getJSONObject(0).getJSONObject("capabilities")
+        fun state() = WorkspaceState(sessionID = "s").receive(Snapshots.workspace(wire), 100).edit("hello")
+        for (native in listOf(null, false, true)) for (helper in listOf(null, false, true)) {
+            if (native == null) capability.remove("steeringImmediate") else capability.put("steeringImmediate", native)
+            if (helper == null) wire.remove("steeringImmediateControl") else wire.put("steeringImmediateControl", helper)
+            assertEquals("native=$native helper=$helper", native == true && helper == true, state().unavailable("send", 101) == null)
+            assertEquals("queue", state().prepare("queue", 101).action)
+        }
+        for (bad in listOf("true", 1, JSONObject.NULL)) {
+            capability.put("steeringImmediate", bad)
+            assertThrows(IllegalArgumentException::class.java) { Snapshots.workspace(wire) }
+            capability.put("steeringImmediate", true)
+            wire.put("steeringImmediateControl", bad)
+            assertThrows(IllegalArgumentException::class.java) { Snapshots.workspace(wire) }
+            wire.put("steeringImmediateControl", true)
+        }
+    }
+
     @Test fun sessionAppearanceRejectsNonIntegerRgbRatherThanCoercingOrIgnoringIt() {
         val wire = JSONObject("""{"connected":true,"sessionActionsControl":true,"sessions":[{"id":"s","name":"Saved","project":"","agent":"claude","state":"idle","connected":false,"ticket":"t","capabilities":{"steering":false,"subagentChat":false,"subagentStop":false},"sessionActions":{"ticket":"m","sourceID":"original","group":"saved","rgb":"123","overridden":true,"colors":[{"name":"Sky","rgb":10930431}],"editable":true,"removable":true,"resumable":true,"resumeStatus":"available","resumeDetail":""}}]}""")
         for (bad in listOf("123", true, -1, 0x1000000, 12.5, JSONObject.NULL)) {

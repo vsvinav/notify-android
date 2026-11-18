@@ -498,7 +498,7 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     fun prepareControl(action: String) = local {
         check(state.value.live) { "Wait for a fresh Mac update." }
         val command = state.value.workspace.prepare(action, SystemClock.elapsedRealtime())
-        if (action == "queue") sendControl(command) else change { copy(controlReview = command) }
+        if (!command.requiresConfirmation) sendControl(command) else change { copy(controlReview = command) }
     }
     fun confirmControl() { state.value.controlReview?.let(::sendControl) }
     fun prepareSessionAction(action: String, rgb: Int? = null, target: String? = null) = local {

@@ -8,6 +8,29 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 class ConversationCacheTest {
+    @Test fun sendReceiptsKeepTruthfulOfflineLabelsAndDeduplicateOnlyMatchingActivity() {
+        val receipts = listOf("submitted", "unknown", "failed").mapIndexed { index, status ->
+            ControlReceipt("private-receipt-$index", "send", "$status instruction", status, "", "$index")
+        }
+        val detail = snapshot().detail!!.copy(activity = listOf(
+            Activity("runtime", "user", "Received", "consumed instruction", "3", clientTurnID = "consumed-receipt"),
+            Activity("helper", "user", "Helper message", "different target", "4", "helper", "private-receipt-0")
+        ), controls = receipts + ControlReceipt("consumed-receipt", "send", "consumed instruction", "received", "", "3"))
+        val projected = conversationMessages(detail, "")
+        assertEquals(4, projected.size)
+        assertEquals(listOf("Your message · submitted", "Your message · unknown", "Your message · failed", "Received"),
+            projected.map { it.title })
+        val storage = Storage()
+        val store = ConversationCacheStore(storage)
+        val scope = ConversationScope.from(relationship)
+        store.save(store.open(scope), snapshot().copy(detail = detail), 100)
+        val restored = ConversationCacheStore(storage).let { it.restore(it.open(scope)) }
+        assertEquals(projected.map { it.title }, restored.conversations.single { it.target.agentID.isEmpty() }.messages.map { it.title })
+        val bytes = storage.data!!.toString(Charsets.UTF_8)
+        for (private in listOf("private-receipt", "consumed-receipt", "clientTurnID", "controls", "capabilities"))
+            assertFalse(bytes.contains(private))
+    }
+
     private val relationship = Relationship(Account("issuer", "subject"), "mac", "pin", "device", "public", "Phone", true)
     private val session = Session("s", "Build", "private-project", "copilot", "working", true,
         "secret-ticket", Capabilities(true, true, true))

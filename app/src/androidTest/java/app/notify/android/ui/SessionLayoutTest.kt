@@ -273,6 +273,19 @@ class SessionLayoutTest : InstrumentationTestCase() {
         }
     }
 
+    fun testLegacyMainShowsQueueWithUpdateGuidance() {
+        fixture(content = { state, controller, _ ->
+            val workspace = state.workspace
+            val legacy = workspace.snapshot!!.copy(sessions = workspace.snapshot.sessions.map {
+                it.copy(capabilities = it.capabilities.copy(steeringImmediate = false))
+            })
+            Sessions(state.copy(workspace = workspace.receive(legacy, state.now)), controller, mutableMapOf(), mutableMapOf())
+        }) {
+            bounds("Queue")
+            bounds("Queue waits for the current turn. For Send, update the Mac/helper and reload this session’s Notify extension.")
+        }
+    }
+
     fun testSettingsTextIsInsideRoundedButtonEdges() {
         for (enlarged in listOf(false, true)) fixture(enlarged, { state, controller, activity ->
             Settings(state, controller, activity, {}, SettingsSection.Connection, {})
@@ -336,7 +349,7 @@ class SessionLayoutTest : InstrumentationTestCase() {
         try {
             val now = SystemClock.elapsedRealtime()
             val session = Session("layout-session", "Layout test", "Notify", "copilot", "working", true,
-                "current-ticket", Capabilities(true, true, true))
+                "current-ticket", Capabilities(true, true, true, steeringImmediate = true))
             val detail = SessionDetail(session.id, session.ticket, emptyList(), listOf(
                 Activity("message", "assistant", "Assistant", "Layout regression conversation", "2026-01-01T00:00:00Z"),
             ), emptyList())

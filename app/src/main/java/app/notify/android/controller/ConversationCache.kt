@@ -21,7 +21,7 @@ data class ConversationHistory(val conversations: List<CachedConversation> = emp
         val session = snapshot.sessions.singleOrNull { it.id == detail.sessionID && it.ticket == detail.ticket } ?: return this
         val targets = (listOf("") + detail.agents.map { it.id } +
             detail.activity.filter { it.kind in setOf("user", "assistant") }.map { it.agentID } +
-            detail.controls.filter { it.action in setOf("queue", "interrupt") }.map { it.agentID }).distinct()
+            detail.controls.filter { it.action in setOf("send", "queue", "interrupt") }.map { it.agentID }).distinct()
         val updates = targets.map { agent ->
             CachedConversation(DraftTarget(session.id, agent), session.name,
                 if (agent.isEmpty()) "Main · ${session.agent}" else detail.agents.firstOrNull { it.id == agent }?.name ?: agent,
@@ -39,7 +39,7 @@ data class ConversationHistory(val conversations: List<CachedConversation> = emp
 internal fun conversationMessages(detail: SessionDetail, agentID: String): List<Activity> {
     val messages = detail.activity.filter { it.agentID == agentID && it.kind in setOf("user", "assistant") }
         .map { it.copy(id = "activity:${it.id}") }.toMutableList()
-    for (receipt in detail.controls.filter { it.agentID == agentID && it.action in setOf("queue", "interrupt") }) {
+    for (receipt in detail.controls.filter { it.agentID == agentID && it.action in setOf("send", "queue", "interrupt") }) {
         if (messages.none { it.clientTurnID == receipt.id }) messages.add(Activity("receipt:${receipt.id}", "user",
             "Your message · ${receipt.status}", receipt.message, receipt.timestamp, receipt.agentID))
     }
