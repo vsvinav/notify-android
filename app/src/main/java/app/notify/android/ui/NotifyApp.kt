@@ -170,13 +170,29 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
             }
         }
         state.controlReview?.let { command ->
-            Confirmation(if (command.isPolicy) "Enable Dangerous Auto-yes?" else if (command.action == "stop") "Stop this exact target?" else "Interrupt the main agent?",
+            Confirmation(when (command.action) {
+                "dangerous_auto_yes" -> "Enable Dangerous Auto-yes?"
+                "remove_subagent" -> "Remove this ended helper?"
+                "stop_idle_subagents" -> "Stop idle helpers in this session?"
+                "stop" -> "Stop this exact target?"
+                else -> "Interrupt the main agent?"
+            },
                 controller::cancelReview, controller::confirmControl, state.live && !state.busy,
-                confirmLabel = if (command.isPolicy) "Enable dangerous mode" else "Confirm") {
+                confirmLabel = when (command.action) {
+                    "dangerous_auto_yes" -> "Enable dangerous mode"
+                    "remove_subagent" -> "Remove from list"
+                    "stop_idle_subagents" -> "Stop idle >10 min"
+                    else -> "Confirm"
+                }) {
+                if (command.isManagement) Evidence("Selected session", state.workspace.session?.name ?: command.sessionID)
                 Evidence("Session", command.sessionID)
                 Evidence("Ticket", command.ticket)
-                Evidence("Target", if (command.agentID.isEmpty()) "Main agent" else command.agentID)
+                Evidence("Target", if (command.action == "stop_idle_subagents") "Eligible helpers in this session only"
+                    else if (command.agentID.isEmpty()) "Main agent"
+                    else "${state.workspace.detail?.agents?.firstOrNull { it.id == command.agentID }?.name ?: "Helper"} · ${command.agentID}")
                 Text(if (command.isPolicy) "Currently waiting eligible tools may immediately be approved. Ongoing eligible tools may also be approved, including destructive work. Questions stay manual.\n\nThis applies only to this session. It stays enabled after your PHONE disconnects until manually disabled or the session stops. Provider disconnects and errors still turn it off.\n\nThis replaces normal session Auto-yes; the two modes cannot be enabled together."
+                    else if (command.action == "remove_subagent") "Remove only this ended helper from the runtime list. This is not Stop. No source files are deleted. A retained helper already absent from the runtime will report failure, not a removal."
+                    else if (command.action == "stop_idle_subagents") "The Mac rechecks helpers continuously observed idle for more than 10 minutes. Eligible helpers and their descendants may stop. Main agents and other sessions are never targeted. Skipped, failed or uncertain results will be reported. This is a manual action, not a schedule; no files are deleted."
                     else if (command.action == "interrupt") "Stop the current main-agent turn and send the instruction below instead."
                     else if (command.agentID.isEmpty()) "Stop the current main-agent turn. This does not delete the session."
                     else "Stop only this selected subagent. Its descendants may also stop. Other agents are not selected.")
@@ -419,12 +435,14 @@ internal fun Sessions(state: ControllerState, controller: ControllerViewModel,
                     when (pane) {
                         SessionPane.Chat -> SessionChat(state, controller, positions, openSessions) { pane = SessionPane.Agents }
                         SessionPane.Decision -> Inbox(state, controller, feedback, workspace.sessionID)
-                        SessionPane.Agents -> AgentTeam(state, Modifier.fillMaxSize(), select)
+                        SessionPane.Agents -> AgentTeam(state, Modifier.fillMaxSize(), select,
+                            controller::prepareManagement, controller::creationDraft)
                     }
                 }
                 if (sideTeam && pane != SessionPane.Agents) {
                     VerticalDivider()
-                    AgentTeam(state, Modifier.width(280.dp * fontScale).fillMaxHeight(), select)
+                    AgentTeam(state, Modifier.width(280.dp * fontScale).fillMaxHeight(), select,
+                        controller::prepareManagement, controller::creationDraft)
                 }
             }
         }

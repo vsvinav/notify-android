@@ -2,14 +2,112 @@ package app.notify.android.controller
 
 import org.junit.Assert.*
 import org.junit.Test
+import org.json.JSONObject
 
 class WorkspaceTest {
+    @Test fun legacySteeringMustNotPretendToSupportSubagentManagement() {
+        val state = workspace().select("s")
+        for (action in listOf("create_subagent", "remove_subagent", "stop_idle_subagents"))
+            assertNotNull("Old Mac steering cannot dispatch $action", state.unavailable(action, 101))
+    }
     private val offEpoch1 = "00000000-0000-8000-8000-000000000001"
     private val offEpoch2 = "00000000-0000-8000-8000-000000000002"
     private val session = Session("s", "Build", "project", "copilot", "working", true, "t", Capabilities(true, true, true))
     private val detail = SessionDetail("s", "t", listOf(Agent("child", "Helper", "running")), emptyList(), emptyList())
     private fun workspace() = WorkspaceState(snapshot = WorkspaceSnapshot(true, listOf(session), detail),
         sessionID = "s", agentID = "child", receivedAt = 100)
+    private fun managementWorkspace() = workspace().copy(snapshot = WorkspaceSnapshot(true, listOf(session.copy(
+        capabilities = session.capabilities.copy(subagentCreate = true, subagentRemove = true, subagentCleanup = true),
+        managementTicket = "m1", subagentTypes = listOf("reviewer"), subagentModels = listOf("live-model"))), detail))
+    private val creation = SubagentCreation("Review", "reviewer", "  Exact instructions\n", "live-model")
+    private fun managementAck(status: String, ok: Boolean = true) = JSONObject()
+        .put("ok", ok).put("status", status).put("commandID", "runtime-receipt")
+        .put("detail", "Stopped 2; skipped 1; failed 0; uncertain 0")
+
+    @Test fun creationRoutesToSessionWithExactLiveCatalogAndNeverTouchesChatDrafts() {
+        val state = managementWorkspace().edit("helper draft").select("s").edit("main draft")
+            .select("s", "child").editCreation(creation)
+        val command = state.prepareManagement("create_subagent", 101)
+        assertEquals("s", command.sessionID)
+        assertEquals("", command.agentID)
+        assertEquals("", command.text)
+        assertEquals("m1", command.json().getString("managementTicket"))
+        assertEquals(creation.prompt, command.json().getJSONObject("creation").getString("prompt"))
+        assertEquals("live-model", command.json().getJSONObject("creation").getString("model"))
+        assertEquals(4, java.util.UUID.fromString(command.id).version())
+        state.validate(command, 101)
+        for (status in listOf("received", "queued", "removed", "cleaned")) assertThrows(IllegalArgumentException::class.java) {
+            state.sending(command).acknowledgeManagement(command, managementAck(status))
+        }
+        val done = state.sending(command).acknowledgeManagement(command, managementAck("created"))
+        assertEquals(SubagentCreation(), done.creationDraft.value)
+        assertEquals("helper draft", done.draft)
+        assertEquals("main draft", done.select("s").draft)
+        assertEquals("child", done.agentID)
+        assertNull(done.delivery)
+    }
+
+    @Test fun creationKeepsNewEditsAndSessionIdentityDuringPendingResultsOrReconnect() {
+        val state = managementWorkspace().editCreation(creation)
+        val command = state.prepareManagement("create_subagent", 101)
+        val editing = state.sending(command).editCreation(creation.copy(name = "New"))
+            .editCreation(creation).select("other")
+        val done = editing.acknowledgeManagement(command, managementAck("created"))
+        assertEquals("other", done.sessionID)
+        assertEquals(creation, done.select("s").creationDraft.value)
+        val rejected = state.sending(command).acknowledgeManagement(command, managementAck("failed", false))
+        assertEquals(creation, rejected.creationDraft.value)
+        assertFalse(rejected.managementDelivery!!.blocked)
+        val unknown = state.sending(command).uncertain(command).receive(WorkspaceSnapshot(false, emptyList(), null), 102)
+            .receive(state.snapshot!!, 103)
+        assertEquals(creation, unknown.creationDraft.value)
+        assertThrows(IllegalStateException::class.java) { unknown.prepareManagement("create_subagent", 104) }
+    }
+
+    @Test fun liveCapabilityModelChangesInvalidateReviewWithoutLosingAnyDraft() {
+        val state = managementWorkspace().edit("chat").editCreation(creation)
+        val command = state.prepareManagement("create_subagent", 101)
+        for (session in listOf(state.session!!.copy(subagentModels = emptyList()),
+            state.session!!.copy(managementTicket = "m2"),
+            state.session!!.copy(capabilities = state.session!!.capabilities.copy(subagentCreate = false)),
+            state.session!!.copy(agent = "claude"), state.session!!.copy(connected = false))) {
+            val changed = ControllerState(workspace = state, controlReview = command)
+                .receiveWorkspace(state.snapshot!!.copy(sessions = listOf(session)), 102)
+            assertNull(changed.controlReview)
+            assertEquals("chat", changed.workspace.draft)
+            assertEquals(creation, changed.workspace.creationDraft.value)
+            assertThrows(IllegalStateException::class.java) { changed.workspace.validate(command, 103) }
+        }
+        val defaults = state.copy(snapshot = state.snapshot!!.copy(sessions = listOf(state.session!!.copy(subagentModels = emptyList()))))
+            .editCreation(creation.copy(model = null))
+        assertFalse(defaults.prepareManagement("create_subagent", 101).json().getJSONObject("creation").has("model"))
+        assertThrows(IllegalStateException::class.java) { state.prepareManagement("create_subagent", 10100) }
+        assertThrows(IllegalStateException::class.java) { state.select("other").validate(command, 101) }
+        assertThrows(IllegalArgumentException::class.java) { state.editCreation(creation.copy(name = "😀".repeat(81))) }
+    }
+
+    @Test fun removalRequiresExactEndedHelperAndCleanupIsOnlySelectedSession() {
+        val state = managementWorkspace().edit("helper draft")
+        assertThrows(IllegalStateException::class.java) { state.prepareManagement("remove_subagent", 101, "child") }
+        val ended = state.copy(snapshot = state.snapshot!!.copy(detail = detail.copy(agents = listOf(Agent("child", "Helper", "failed")))))
+        val remove = ended.prepareManagement("remove_subagent", 101, "child")
+        assertEquals("child", remove.agentID)
+        assertEquals("removed", ended.sending(remove).acknowledgeManagement(remove, managementAck("removed")).managementDeliveries[remove.target]!!.status.substringBefore(":"))
+        assertThrows(IllegalStateException::class.java) { ended.prepareManagement("remove_subagent", 101, "missing") }
+        val cleanup = state.prepareManagement("stop_idle_subagents", 101)
+        assertFalse(cleanup.json().has("agentID"))
+        assertFalse(cleanup.json().has("creation"))
+        assertEquals("s", cleanup.sessionID)
+        val done = state.sending(cleanup).acknowledgeManagement(cleanup, managementAck("cleaned"))
+        assertTrue(done.managementDelivery!!.status.contains("skipped 1"))
+        assertEquals("helper draft", done.draft)
+        val partial = state.sending(cleanup).acknowledgeManagement(cleanup, managementAck("unknown", false)
+            .put("detail", "Cancelled 2; skipped 3; failed 1; uncertain 1"))
+        assertTrue(partial.managementDelivery!!.status.contains("uncertain 1"))
+        assertTrue(partial.managementDelivery!!.blocked)
+        assertThrows(IllegalStateException::class.java) { partial.prepareManagement("stop_idle_subagents", 102) }
+        assertThrows(IllegalArgumentException::class.java) { state.prepareManagement("stop_idle_subagents", 101, "child") }
+    }
 
     @Test fun legacyDangerousPolicyIsExplicitlyUnsupportedNotAnUnknownAction() {
         val state = workspace().select("s")

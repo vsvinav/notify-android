@@ -29,6 +29,7 @@ import org.junit.Test
 import app.notify.android.controller.ControllerState
 import app.notify.android.controller.Snapshots
 import app.notify.android.controller.WorkspaceState
+import app.notify.android.controller.SubagentCreation
 
 /** Real HTTPS/WSS with a deterministic plaintext crypto fixture, NOT an MLS interoperability test. */
 class RemoteConnectionTest {
@@ -134,6 +135,34 @@ class RemoteConnectionTest {
              "dangerousAutoYes":{"ticket":"p","offTicket":"$token","revision":1,"enabled":true,"normalEnabled":false}
             }],"detail":null}
         """)), 0)
+
+    @Test fun typedCreationTraversesHttpsRpcAndOnlyCreatedClearsItsUneditedSessionForm() = runBlocking {
+        grant(); val relay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        val base = policyWorkspace()
+        var state = base.copy(snapshot = base.snapshot!!.copy(sessions = listOf(base.session!!.copy(
+            managementTicket = "m", subagentTypes = listOf("reviewer"), subagentModels = listOf("live-model"),
+            capabilities = base.session!!.capabilities.copy(subagentCreate = true)))))
+            .editCreation(SubagentCreation("Exact name", "reviewer", "  instructions\n", "live-model"))
+        val command = state.prepareManagement("create_subagent", 0)
+        state.validate(command, 0)
+        state = state.sending(command)
+        val request = async { connection.request("control", command.json(), command.id) }
+        val frame = withTimeout(3000) { while (relay.frames.isEmpty()) delay(10); relay.frames.take() }
+        val data = frame.getJSONObject("payload").getJSONObject("data")
+        assertEquals("create_subagent", data.getString("action"))
+        assertEquals("s", data.getString("sessionID"))
+        assertFalse(data.has("agentID"))
+        assertEquals("live-model", data.getJSONObject("creation").getString("model"))
+        assertEquals("  instructions\n", data.getJSONObject("creation").getString("prompt"))
+        relay.send(JSONObject().put("id", command.id).put("status", 200).put("data",
+            JSONObject().put("ok", true).put("commandID", "native-command").put("status", "created").put("detail", "Created exact helper")))
+        state = state.acknowledgeManagement(command, request.await())
+        assertEquals(SubagentCreation(), state.creationDraft.value)
+        assertNull(state.delivery)
+        assertTrue(runCatching { connection.request("control", command.json(), command.id) }.isFailure)
+        assertTrue(relay.frames.isEmpty())
+    }
 
     @Test fun workspaceOffRejectedBeforeDispatchCanBeExplicitlyRequestedAgainOnSameConnection() = runBlocking {
         grant(); val relay = Relay().also { it.enqueue() }

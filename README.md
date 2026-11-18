@@ -159,6 +159,29 @@ capability loss, errors, dispatch failures and Mac shutdown retain native
 fail-safe resets. These controls are not in the published 0.2.0 APK; physical-device
 acceptance of the new controls is still pending.
 
+**Helper management (unpublished source preview):** open the selected session’s
+**Agents** tab and choose **Add subagent**. The native form offers only live Mac
+agent-type and model IDs. **Configured default** leaves model selection to the
+runtime, including when no explicit models are advertised. Review credit usage
+and permission rules before **Create subagent**. Unavailable/old/offline runtimes
+explain why the visible action is disabled; Claude creation is not supported.
+Form values stay separate from chat drafts and survive navigation/reconnection
+within the app session. Only a matching **created** acknowledgment clears an
+unchanged form; edits made while waiting are retained. Catalog changes invalidate
+reviewed actions without silently changing their model or clearing chat drafts.
+
+Expand inactive helpers for the separate, confirmed **Remove from list** action.
+Only known completed, failed or cancelled helpers are eligible. A retained helper
+already absent from the runtime reports failure, not a fabricated removal.
+**Stop idle >10 min** confirms cleanup of the **selected session only**; eligible
+helpers and descendants may stop, never main agents or other sessions. The Mac
+rechecks continuously observed idle time and ancestry. Neither action deletes
+files or schedules background cleanup. Actual runtime status and counts, including
+skipped, failed and uncertain outcomes, appear in Agents. Queue acceptance is not
+creation/removal success; timeouts stay unknown and are never retried automatically.
+These controls require matching updated native Mac, helper and Android builds.
+They have headless synthetic coverage, not installed-device acceptance.
+
 Claude and other unsupported provider controls remain read-only. **Decision** opens
 the selected session's real approvals and questions; the drawer's **Needs you**
 entry keeps all sessions' pending requests discoverable. Review the
@@ -183,7 +206,7 @@ routing cleanup. Back returns from details, diagnostics, and third-party notices
 ### Remaining parity work
 
 This is not full Mac feature parity. Planned work includes richer conversation
-presentation and approved typed contracts for helper creation/model selection/removal/idle cleanup; synchronized
+presentation; synchronized
 session colors/order; removing disconnected sessions, resume and relevant settings.
 These need exact capability/target checks and sensitive-action consent, not
 phone-side emulation.

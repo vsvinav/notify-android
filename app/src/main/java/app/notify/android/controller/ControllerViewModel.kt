@@ -55,6 +55,7 @@ data class ControllerState(
             if (it.isPolicy) updated.sessionID == it.sessionID && updated.session?.ticket == it.ticket &&
                 it.agentID.isEmpty() && updated.select(updated.sessionID).policyUnavailable(receivedAt, it.enabled == true) == null &&
                 updated.session?.dangerousAutoYes?.ticket == it.policyTicket
+            else if (it.isManagement) runCatching { updated.validate(it, receivedAt) }.isSuccess
             else updated.target == it.target && updated.unavailable(it.action, receivedAt) == null
         })
     }
@@ -391,6 +392,15 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         change { copy(workspace = workspace.select(id, agentID), controlReview = null) }
     }
     fun draft(text: String) = local { change { copy(workspace = workspace.edit(text), controlReview = null) } }
+    fun creationDraft(value: SubagentCreation) = local {
+        change { copy(workspace = workspace.editCreation(value), controlReview = null) }
+    }
+    fun prepareManagement(action: String, helperID: String = "") = local {
+        check(state.value.live) { "Wait for a fresh Mac update." }
+        val command = state.value.workspace.prepareManagement(action, SystemClock.elapsedRealtime(), helperID)
+        if (action == "create_subagent") sendControl(command)
+        else change { copy(controlReview = command) }
+    }
     fun prepareControl(action: String) = local {
         check(state.value.live) { "Wait for a fresh Mac update." }
         val command = state.value.workspace.prepare(action, SystemClock.elapsedRealtime())
@@ -433,6 +443,8 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
                     val policy = Snapshots.policy(result.getJSONObject("dangerousAutoYes"))
                     change { copy(workspace = workspace.acknowledgePolicy(command, policy, ok, result.optionalText("error")),
                         error = if (ok) error else result.optionalText("error")) }
+                } else if (command.isManagement) {
+                    change { copy(workspace = workspace.acknowledgeManagement(command, result)) }
                 } else {
                     check(result.bool("ok")) { "The Mac did not acknowledge this control. Check the exact target; nothing was resent." }
                     change { copy(workspace = workspace.acknowledge(command, result.text("commandID", 256, true), result.text("status", 64, true))) }

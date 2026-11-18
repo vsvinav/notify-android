@@ -43,15 +43,25 @@ object Snapshots {
     fun workspace(value: JSONObject): WorkspaceSnapshot {
         bounded(value)
         val policyControls = value.bool("dangerousAutoYesControl", false) && value.bool("dangerousAutoYesOffEpoch", false)
+        val managementControls = value.bool("subagentManagementControl", false)
         val sessions = value.objects("sessions", 256).map { s ->
             val c = s.getJSONObject("capabilities")
             val policy = if (!s.has("dangerousAutoYes")) null else policy(s.getJSONObject("dangerousAutoYes"))
             val capable = c.bool("dangerousAutoYes", false)
             require(!capable || policy != null) { "Missing Mac policy state." }
+            val managementTicket = if (s.has("managementTicket")) s.text("managementTicket", 256, true) else null
+            val types = s.catalog("subagentTypes", 100, 128)
+            val models = s.catalog("subagentModels", 200, 200)
+            val create = c.bool("subagentCreate", false)
+            val remove = c.bool("subagentRemove", false)
+            val cleanup = c.bool("subagentCleanup", false)
+            require(!(create || remove || cleanup) || managementTicket != null) { "Missing management authority." }
+            require(!create || types.isNotEmpty() && s.has("subagentModels")) { "Missing live creation catalog." }
             Session(s.text("id", 128, true), s.text("name", 2048), s.text("project", 2048), s.text("agent", 256),
                 s.text("state", 256), s.bool("connected"), s.text("ticket", 256),
-                Capabilities(c.bool("steering"), c.bool("subagentChat"), c.bool("subagentStop"), capable && policyControls && policy?.hasOffAuthority == true),
-                s.reportedCount("runningCount"), s.reportedCount("idleCount"), policy)
+                Capabilities(c.bool("steering"), c.bool("subagentChat"), c.bool("subagentStop"), capable && policyControls && policy?.hasOffAuthority == true,
+                    create && managementControls, remove && managementControls, cleanup && managementControls),
+                s.reportedCount("runningCount"), s.reportedCount("idleCount"), policy, managementTicket, types, models)
         }
         require(sessions.map { it.id }.distinct().size == sessions.size) { "Ambiguous session identifiers." }
         val detail = if (!value.has("detail") || value.isNull("detail")) null else {
@@ -74,7 +84,7 @@ object Snapshots {
                 it.text("message"), it.text("status", 64), it.text("detail"), it.text("createdAt", 128), it.optionalText("agentID", 128)) }
             require(activity.map { it.id }.distinct().size == activity.size) { "Ambiguous activity identifiers." }
             SessionDetail(d.text("sessionID", 128, true), d.text("ticket", 256, true), agents, activity, controls,
-                d.bool("truncated", false), team?.optionalText("error") ?: "")
+                d.bool("truncated", false), team?.optionalText("error") ?: "", team != null)
         }
         return WorkspaceSnapshot(value.bool("connected"), sessions, detail, value.bool("truncated", false), value.optionalText("error"))
     }
@@ -93,6 +103,18 @@ object Snapshots {
         val count = opt(name)
         require(count is Int && count in 0..1_000_000) { "Invalid reported agent count." }
         return count
+    }
+    private fun JSONObject.catalog(name: String, max: Int, length: Int): List<String> {
+        if (!has(name)) return emptyList()
+        val array = getJSONArray(name)
+        require(array.length() <= max) { "Live catalog exceeds its limit." }
+        val values = (0 until array.length()).map {
+            val entry = array.get(it)
+            require(entry is String && entry.isNotBlank() && entry.length <= length && !entry.contains('\u0000')) { "Invalid live catalog ID." }
+            entry
+        }
+        require(values.distinct().size == values.size) { "Ambiguous live catalog IDs." }
+        return values
     }
     fun reply(command: ReplyCommand): JSONObject = JSONObject().put("sessionID", command.sessionID)
         .put("requestID", command.requestID).put("ticket", command.ticket).put("decision", command.decision)

@@ -9,6 +9,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SnapshotsTest {
+    @Test fun liveManagementCatalogNeedsBothHelperAndNativeSupport() {
+        val wire = JSONObject("""{"connected":true,"sessions":[{"id":"s","name":"Build","project":"","agent":"copilot","state":"working","connected":true,"ticket":"t","managementTicket":"m","subagentTypes":["reviewer"],"subagentModels":[],"capabilities":{"steering":true,"subagentChat":true,"subagentStop":true,"subagentCreate":true,"subagentRemove":true,"subagentCleanup":true}}]}""")
+        assertFalse(Snapshots.workspace(wire).sessions.single().capabilities.subagentCreate)
+        wire.put("subagentManagementControl", true)
+        val parsed = Snapshots.workspace(wire).sessions.single()
+        assertTrue(parsed.capabilities.subagentCreate)
+        assertTrue(parsed.capabilities.subagentRemove)
+        assertTrue(parsed.capabilities.subagentCleanup)
+        assertEquals(listOf("reviewer"), parsed.subagentTypes)
+        assertEquals(emptyList<String>(), parsed.subagentModels)
+        val row = wire.getJSONArray("sessions").getJSONObject(0)
+        row.put("subagentTypes", org.json.JSONArray(listOf("reviewer", "reviewer")))
+        assertThrows(IllegalArgumentException::class.java) { Snapshots.workspace(wire) }
+        row.put("subagentTypes", org.json.JSONArray(listOf("reviewer")))
+        row.put("subagentModels", org.json.JSONArray(listOf("😀".repeat(101))))
+        assertThrows(IllegalArgumentException::class.java) { Snapshots.workspace(wire) }
+    }
     @Test fun policySnapshotIsOptionalButNeverInventsOffOrAcceptsMalformedSupport() {
         val wire = JSONObject("""{"connected":true,"sessions":[{"id":"s","name":"Build","project":"","agent":"copilot","state":"working","connected":true,"ticket":"t","capabilities":{"steering":false,"subagentChat":false,"subagentStop":false}}]}""")
         assertNull(Snapshots.workspace(wire).sessions.single().dangerousAutoYes)

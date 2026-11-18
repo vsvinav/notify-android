@@ -39,6 +39,44 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class SessionLayoutTest : InstrumentationTestCase() {
+    fun testAgentsExposeAddEvenWhenTheMacDoesNotSupportIt() {
+        fixture(content = { state, _, _ -> AgentTeam(state, Modifier.fillMaxSize(), {}) }) {
+            bounds("Add subagent")
+            bounds("Stop idle >10 min")
+            var add: AccessibilityNodeInfo? = node("Add subagent")
+            var disabled = false
+            while (add != null) { disabled = disabled || !add.isEnabled; add = add.parent }
+            assertTrue("Unsupported management must not dispatch", disabled)
+        }
+    }
+
+    fun testCreationFormScrollsToExplicitCreateAtLargeFontScale() {
+        for (enlarged in listOf(false, true)) fixture(enlarged, { state, _, _ ->
+            val session = state.workspace.session!!.copy(managementTicket = "fixture-management",
+                subagentTypes = listOf("fixture-reviewer"), subagentModels = emptyList(),
+                capabilities = state.workspace.session!!.capabilities.copy(subagentCreate = true))
+            val workspace = state.workspace.copy(snapshot = state.workspace.snapshot!!.copy(sessions = listOf(session)))
+                .editCreation(SubagentCreation("Fixture helper", "fixture-reviewer", "Synthetic layout instructions"))
+            SubagentForm(state.copy(workspace = workspace), {}, {}, {})
+        }) {
+            bounds("Add subagent")
+            val queue = ArrayDeque<AccessibilityNodeInfo>()
+            instrumentation.uiAutomation.rootInActiveWindow?.let(queue::add)
+            var scroll: AccessibilityNodeInfo? = null
+            while (queue.isNotEmpty()) {
+                val item = queue.removeFirst()
+                if (item.isScrollable) { scroll = item; break }
+                for (index in 0 until item.childCount) item.getChild(index)?.let(queue::add)
+            }
+            assertNotNull("Form body must scroll rather than clip its action", scroll)
+            repeat(12) {
+                scroll!!.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                instrumentation.waitForIdleSync()
+            }
+            bounds("Create subagent")
+        }
+    }
+
     fun testComposerAndSendAreBelowConversationRatherThanOverlaid() {
         fixture(content = { state, controller, _ ->
             Sessions(state, controller, mutableMapOf(), mutableMapOf())
