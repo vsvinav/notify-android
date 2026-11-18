@@ -38,7 +38,8 @@ import org.json.JSONTokener
 
 data class RemoteStatus(val state: String, val message: String)
 
-class RemoteRequestFailure(message: String, val uncertain: Boolean, val status: Int? = null) : IOException(message)
+class RemoteRequestFailure(message: String, val uncertain: Boolean, val status: Int? = null,
+    val notDispatched: Boolean = false) : IOException(message)
 
 internal interface RemoteCrypto : Closeable {
     fun keyPackage(): ByteArray
@@ -57,10 +58,11 @@ class RemoteConnection internal constructor(
     private val openCrypto: () -> RemoteCrypto,
     private val elapsed: () -> Long,
     private val wall: () -> Long,
+    private val trace: ConnectionTrace? = null,
 ) : Closeable {
     constructor(
         service: ServiceClient, identity: DeviceIdentity, macID: String, deviceID: String,
-        pinnedMacKey: ByteArray, onStatus: (RemoteStatus) -> Unit,
+        pinnedMacKey: ByteArray, trace: ConnectionTrace? = null, onStatus: (RemoteStatus) -> Unit,
     ) : this(service, macID, deviceID, pinnedMacKey, onStatus, {
         val channel = NativeChannel.open(identity, "phone")
         object : RemoteCrypto {
@@ -72,7 +74,7 @@ class RemoteConnection internal constructor(
             override fun unprotect(frame: ByteArray, expectedSender: ByteArray) = channel.unprotect(frame, expectedSender)
             override fun close() = channel.close()
         }
-    }, SystemClock::elapsedRealtime, System::currentTimeMillis)
+    }, SystemClock::elapsedRealtime, System::currentTimeMillis, trace)
 
     private val pin = pinnedMacKey.clone()
     private val lock = Any()
@@ -88,7 +90,7 @@ class RemoteConnection internal constructor(
         require(pin.size == 65 && pin[0] == 4.toByte()) { "A complete pinned Mac P256 public key is required." }
     }
 
-    private class Attempt(val generation: Long, parent: Job?) {
+    private class Attempt(val generation: Long, parent: Job?, val traceAttempt: Int) {
         val job = SupervisorJob(parent)
         val scope = CoroutineScope(job + Dispatchers.IO)
         val events = Channel<Event>(8)
@@ -101,6 +103,7 @@ class RemoteConnection internal constructor(
         var handshake: Job? = null
         val pending = mutableMapOf<String, PendingCall>()
         val usedIDs = mutableSetOf<String>()
+        val offCalls = mutableMapOf<String, OffCall>()
     }
 
     private data class Lease(val expiresAt: Long, val deadline: Long, val id: String, val challenge: String, val approved: Boolean)
@@ -108,12 +111,14 @@ class RemoteConnection internal constructor(
         val result: CompletableDeferred<JSONObject>,
         val deadline: Long,
         val expiresAt: Long,
+        val offSessionID: String? = null,
     )
+    private data class OffCall(val id: String, val payload: String)
     private sealed interface Event {
         data class Open(val protocol: String?) : Event
         data class Text(val text: String) : Event
         data class Binary(val bytes: ByteString) : Event
-        data class Failed(val error: Throwable) : Event
+        data class Failed(val error: Throwable, val httpCode: Int? = null, val wsCode: Int? = null) : Event
     }
 
     fun connect() = synchronized(lock) {
@@ -128,7 +133,7 @@ class RemoteConnection internal constructor(
 
     private fun start() {
         dispose()
-        val a = Attempt(generation, scope.coroutineContext[Job])
+        val a = Attempt(generation, scope.coroutineContext[Job], trace?.newAttempt() ?: 0)
         active = a
         status("connecting", "Connecting to your Mac…")
         a.scope.launch {
@@ -137,6 +142,7 @@ class RemoteConnection internal constructor(
                     if (!current(a)) return@launch
                     a.peer = crypto { openCrypto() }
                 }
+                note(a, TraceEvent.GRANT_BEGIN)
                 val grant = service.post("/v1/remote/grant/begin",
                     JSONObject().put("role", "phone").put("macID", macID).put("deviceID", deviceID))
                 val signature = synchronized(lock) {
@@ -151,12 +157,16 @@ class RemoteConnection internal constructor(
                 synchronized(lock) {
                     if (!current(a)) return@launch
                     applyLease(a, validateLease(a, result, grant.getString("id"), started))
+                    note(a, TraceEvent.GRANT_FINISHED)
                     a.stage = "greeting"
                     requireLive(a)
                     a.socket = service.openRelay(cookie, listener(a))
                     a.handshake = a.scope.launch {
                         delay(120_000)
-                        synchronized(lock) { fail(a, IOException("Pairing or connection timed out. Check your Mac.")) }
+                        synchronized(lock) {
+                            if (current(a)) note(a, TraceEvent.HANDSHAKE_TIMEOUT, TraceCategory.TIMEOUT)
+                            fail(a, IOException("Pairing or connection timed out. Check your Mac."))
+                        }
                     }
                 }
                 for (event in a.events) {
@@ -197,22 +207,29 @@ class RemoteConnection internal constructor(
                 else HttpFailure(it.code, "Relay authorization or upgrade failed (${it.code}).")
             } ?: t
             response?.close()
-            offer(Event.Failed(error))
+            offer(Event.Failed(error, httpCode = response?.code))
         }
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             offer(Event.Failed(if (code in setOf(1002, 1003, 1007, 1008, 1009))
                 ProtocolException("Relay rejected the channel ($code). Check authorization and the paired Mac.")
-            else IOException("Mac connection lost. No actions were retried.")))
+            else IOException("Mac connection lost. No actions were retried."), wsCode = code))
         }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            offer(Event.Failed(IOException("Mac connection closed. No actions were retried.")))
+            offer(Event.Failed(IOException("Mac connection closed. No actions were retried."), wsCode = code))
         }
     }
 
     private fun receive(a: Attempt, event: Event) {
-        if (event is Event.Failed) throw event.error
+        if (event is Event.Failed) {
+            note(a, if (event.wsCode != null) TraceEvent.RELAY_CLOSED else TraceEvent.RELAY_FAILURE,
+                if (event.httpCode == 409) TraceCategory.RELAY_CONFLICT
+                else if (event.wsCode != null) TraceCategory.PEER_CLOSE else TraceCategory.from(event.error),
+                httpCode = event.httpCode, wsCode = event.wsCode)
+            throw event.error
+        }
         requireLive(a)
         if (event is Event.Open) {
+            note(a, TraceEvent.RELAY_OPENED)
             requireProtocol(event.protocol == "notify-relay-v1", "Invalid relay subprotocol.")
             a.scope.launch { renew(a) }
             return
@@ -229,10 +246,12 @@ class RemoteConnection internal constructor(
         requireProtocol(event is Event.Binary, "Binary relay frames required.")
         val bytes = (event as Event.Binary).bytes.toByteArray()
         if (a.stage == "welcome") {
+            note(a, TraceEvent.WELCOME_RECEIVED)
             val value = json(bytes)
             requireProtocol(shape(value, "type", "welcome", "tree") && value.opt("type") == "welcome", "Invalid encrypted-channel welcome.")
             crypto { a.peer!!.joinPinned(byteArray(value.opt("welcome")), byteArray(value.opt("tree")), pin.clone()) }
             a.stage = "approval"
+            note(a, TraceEvent.AWAITING_READY)
             encrypted(a, JSONObject().put("type", "hello"))
             status("pending", "Compare the complete public key on your Mac, then approve there.")
             return
@@ -245,6 +264,7 @@ class RemoteConnection internal constructor(
                 "Invalid encrypted ready response.")
             a.epoch = value.getString("epoch")
             a.stage = "ready"
+            note(a, TraceEvent.CONNECTED)
             attempts = 0
             a.handshake?.cancel()
             status("connected", "Encrypted channel connected.")
@@ -260,11 +280,19 @@ class RemoteConnection internal constructor(
             return
         }
         val data = value.getJSONObject("data")
-        if (status!! in 200..299) call.result.complete(data)
+        note(a, TraceEvent.RPC_RESULT, httpCode = status!!.toInt())
+        if (status in 200..299) call.result.complete(data)
         else {
             val message = (data.opt("error") as? String)?.takeIf { it.isNotBlank() && it.length <= 500 }
                 ?: "Mac request failed ($status)."
-            call.result.completeExceptionally(RemoteRequestFailure(message, false, status.toInt()))
+            // Only this authenticated, definite pre-dispatch rejection releases an Off action ID.
+            // Lost responses, native failures and unknown outcomes retain the no-replay record.
+            val notDispatched = call.offSessionID != null && data.opt("notDispatched") == true &&
+                data.opt("status") != "unknown" && (status in 400..499 || status == 503L)
+            if (notDispatched && a.offCalls[call.offSessionID]?.id == value.getString("id").lowercase())
+                a.offCalls.remove(call.offSessionID)
+            call.result.completeExceptionally(RemoteRequestFailure(message, !notDispatched && call.offSessionID != null,
+                status.toInt(), notDispatched))
         }
     }
 
@@ -279,28 +307,40 @@ class RemoteConnection internal constructor(
             val payload = JSONObject().put("path", path).put("data", data)
             require(payload.toString().toByteArray().size <= 131_072) { "The Mac request is too large." }
             val key = id.lowercase()
+            val off = policyOff(path, data, id)
+            require(!OFF_ID.matches(id) || off) { "Off IDs cannot identify other requests." }
+            val offSessionID = if (off) data.getString("sessionID") else null
             val timeout = if (path == "reply" || path == "control") 25_000L else 12_000L
-            val call = PendingCall(CompletableDeferred(), elapsed() + timeout, wall() + timeout)
+            val call = PendingCall(CompletableDeferred(), elapsed() + timeout, wall() + timeout, offSessionID)
             val context = currentCoroutineContext()
             val a = synchronized(lock) {
                 context.ensureActive()
                 val a = expected
                 if (!current(a)) throw uncertainty()
                 require(!a.usedIDs.contains(key)) { "Request ID was already used. Nothing was resent." }
-                if (a.pending.size >= 8) throw RemoteRequestFailure("Connection is busy. Wait for the current requests.", false)
-                if (a.usedIDs.size >= 4096) {
+                val prior = a.offCalls.values.firstOrNull { it.id == key }
+                require(prior == null) { if (prior?.payload == payload.toString())
+                    "Off was already sent; its outcome may be unknown. Nothing was resent."
+                    else "Off ID was reused with different content. Nothing was resent." }
+                if (a.pending.size >= if (off) 9 else 8)
+                    throw RemoteRequestFailure("Connection is busy. Wait for the current requests.", false, notDispatched = off)
+                if ((!off && a.usedIDs.size >= 4096) ||
+                    (off && !a.offCalls.containsKey(offSessionID) && a.offCalls.size >= 256)) {
                     fail(a, IOException("Connection request history is full. Reconnecting without replay."))
-                    throw RemoteRequestFailure("Connection is refreshing. Nothing was sent.", false)
+                    throw RemoteRequestFailure("Connection is refreshing. Nothing was sent.", false, notDispatched = off)
                 }
                 try {
                     requireLive(a)
-                    a.usedIDs.add(key)
+                    if (off) a.offCalls[offSessionID!!] = OffCall(key, payload.toString())
+                    else a.usedIDs.add(key)
                     a.pending[key] = call
                     val bytes = crypto { a.peer!!.protect(JSONObject().put("id", id).put("epoch", a.epoch)
                         .put("payload", payload).toString().toByteArray()) }
                     context.ensureActive()
                     if (elapsed() >= call.deadline || wall() >= call.expiresAt) throw uncertainty()
                     send(a, bytes)
+                    if (path == "state" || path == "workspace")
+                        note(a, if (path == "state") TraceEvent.STATE_SENT else TraceEvent.WORKSPACE_SENT)
                 } catch (error: Exception) {
                     fail(a, error)
                     throw uncertainty()
@@ -310,6 +350,7 @@ class RemoteConnection internal constructor(
             try {
                 withTimeout(minOf(call.deadline - elapsed(), call.expiresAt - wall()).coerceAtLeast(1)) { call.result.await() }
             } catch (_: TimeoutCancellationException) {
+                synchronized(lock) { if (current(a)) note(a, TraceEvent.RPC_TIMEOUT, TraceCategory.TIMEOUT) }
                 throw uncertainty()
             } catch (error: CancellationException) {
                 throw CancellationException("Request cancelled; delivery is uncertain. Nothing was retried.").also { it.initCause(error) }
@@ -342,17 +383,30 @@ class RemoteConnection internal constructor(
                     JSONObject().put("id", previous.id).put("signature", signature)
                 }
                 val started = LeaseStart(wall(), elapsed())
+                synchronized(lock) { if (current(a)) note(a, TraceEvent.RENEW_BEGIN) }
                 val result = withTimeout(10_000) { service.post("/v1/remote/grant/renew", input) }
                 synchronized(lock) {
                     if (!current(a)) return
                     requireLive(a)
                     applyLease(a, validateLease(a, result, previous.id, started, previous))
+                    note(a, TraceEvent.RENEW_SUCCESS)
                 }
             } catch (error: Exception) {
                 // A lost response may have consumed the nonce. Retire the entire channel, never retry renewal.
                 synchronized(lock) {
-                    if (current(a)) fail(a, if (error is TimeoutCancellationException)
-                        IOException("Channel authorization renewal timed out. No actions were retried.") else error)
+                    if (current(a)) {
+                        // A 401 here can denote a retired route; a fresh grant still checks account, enrollment and signature.
+                        val renewalRejected = error is HttpFailure && error.status == 401
+                        note(a, TraceEvent.RENEW_FAILURE,
+                            if (renewalRejected) TraceCategory.RENEWAL_REJECTED else TraceCategory.from(error),
+                            httpCode = (error as? HttpFailure)?.status)
+                        fail(a, when {
+                            renewalRejected -> IOException("Channel renewal was rejected. Fresh authorization is required.", error)
+                            error is TimeoutCancellationException ->
+                                IOException("Channel authorization renewal timed out. No actions were retried.")
+                            else -> error
+                        })
+                    }
                 }
                 return
             }
@@ -377,7 +431,10 @@ class RemoteConnection internal constructor(
         a.expiry = a.scope.launch {
             delay(minOf(lease.expiresAt - wall(), lease.deadline - elapsed()).coerceAtLeast(0))
             synchronized(lock) {
-                if (current(a) && a.lease === lease) fail(a, IOException("Channel authorization expired. No actions were retried."))
+                if (current(a) && a.lease === lease) {
+                    note(a, TraceEvent.LEASE_EXPIRED, TraceCategory.TIMEOUT)
+                    fail(a, IOException("Channel authorization expired. No actions were retried."))
+                }
             }
         }
     }
@@ -402,6 +459,7 @@ class RemoteConnection internal constructor(
 
     private fun fail(a: Attempt, error: Throwable) {
         if (!current(a)) return
+        note(a, TraceEvent.CHANNEL_FAILURE, TraceCategory.from(error), httpCode = (error as? HttpFailure)?.status)
         val transient = when (error) {
             is HttpFailure -> error.status == 429 || error.status >= 500
             is ProtocolException, is CharacterCodingException, is SSLException -> false
@@ -415,6 +473,7 @@ class RemoteConnection internal constructor(
             return
         }
         val wait = if (attempts < 5) 1000L shl attempts++ else 30_000L
+        note(a, TraceEvent.RETRY_SCHEDULED, retryMs = wait)
         val fence = generation
         status("disconnected", "${error.message ?: "Mac connection lost."} Reconnecting safely in ${wait / 1000}s; no actions will be retried.")
         retry = scope.launch {
@@ -430,6 +489,7 @@ class RemoteConnection internal constructor(
         val a = active
         active = null
         if (a != null) {
+            note(a, TraceEvent.CHANNEL_RETIRED)
             a.job.cancel()
             a.events.cancel()
             a.socket?.cancel()
@@ -453,11 +513,28 @@ class RemoteConnection internal constructor(
         try { onStatus(RemoteStatus(state, message)) } catch (_: Exception) { /* UI observers do not own the channel. */ }
     }
 
+    private fun note(a: Attempt, event: TraceEvent, category: TraceCategory = TraceCategory.NONE,
+        httpCode: Int? = null, wsCode: Int? = null, retryMs: Long? = null) {
+        trace?.record(event, a.traceAttempt, TracePhase.from(a.stage), category, httpCode, wsCode, retryMs,
+            a.lease?.let { minOf(it.expiresAt - wall(), it.deadline - elapsed()) })
+    }
+
     private companion object {
         const val MAX_FRAME = 1_064_960
         val UUID_PATTERN = Regex("^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
+        val OFF_ID = Regex("(?i)^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$")
         val GRANT_PATTERN = Regex("^[A-Za-z0-9_-]{43}$")
         fun uuid(value: Any?) = value is String && UUID_PATTERN.matches(value)
+        fun policyOff(path: String, data: JSONObject, id: String): Boolean =
+            path == "control" && OFF_ID.matches(id) &&
+                shape(data, "id", "sessionID", "ticket", "action", "text", "enabled", "policyTicket", "offTicket") &&
+                data.opt("action") == "dangerous_auto_yes" && data.opt("enabled") == false && data.opt("text") == "" &&
+                (data.opt("id") as? String)?.equals(id, ignoreCase = true) == true &&
+                (data.opt("offTicket") as? String)?.equals(id, ignoreCase = true) == true &&
+                listOf("sessionID", "ticket", "policyTicket").all { field ->
+                    (data.opt(field) as? String)?.let { it.isNotEmpty() && it.length <= (if (field == "sessionID") 128 else 256) &&
+                        (field != "sessionID" || '\u0000' !in it) } == true
+                }
         fun integer(value: Any?): Long? = when (value) {
             is Int -> value.toLong()
             is Long -> value.takeIf { it in -9_007_199_254_740_991L..9_007_199_254_740_991L }

@@ -4,17 +4,30 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AccountLifetimeTest {
+    @Test fun reconnectRequiresMatchingEnrolledAccountAndForeground() {
+        val account = Account("issuer", "subject")
+        val record = Relationship(account, "mac", "pin", "device", "public", "Phone", true)
+        val state = ControllerState(account = account, relationship = record, foreground = true)
+        assertEquals(record, state.reconnectable())
+        assertNull(state.copy(account = null).reconnectable())
+        assertNull(state.copy(account = Account("issuer", "other")).reconnectable())
+        assertNull(state.copy(relationship = record.copy(enrolled = false)).reconnectable())
+        assertNull(state.copy(foreground = false).reconnectable())
+    }
+
     @Test fun expiredAccountClearsPrivateViewsButKeepsPairingAndDisablesAuthorization() {
         val account = Account("issuer", "subject")
         val record = Relationship(account, "mac", "pin", "device", "public", "Phone", true)
         val session = Session("s", "Build", "project", "copilot", "working", true, "t", Capabilities(true, true, true))
         val workspace = WorkspaceState(WorkspaceSnapshot(true, listOf(session),
             SessionDetail("s", "t", emptyList(), emptyList(), emptyList())), "s", receivedAt = 100).edit("private draft")
-        val expired = ControllerState(account = account, relationship = record, workspace = workspace, foreground = true).endAccountSession()
+        val expired = ControllerState(account = account, relationship = record, workspace = workspace,
+            foreground = true, notificationSetupOpen = true).endAccountSession()
         assertEquals(record, expired.relationship)
         assertNull(expired.account)
         assertTrue(expired.workspace.drafts.isEmpty())
         assertNull(expired.workspace.snapshot)
         assertFalse(expired.live)
+        assertFalse(expired.notificationSetupOpen)
     }
 }

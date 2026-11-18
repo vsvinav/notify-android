@@ -28,4 +28,21 @@ class PairingLinkTest {
             assertThrows(IllegalArgumentException::class.java) { PairingLink.parse(invalid, origin) }
         }
     }
+
+    @Test fun rejectsNormalizedPathsAndHiddenUrlCharacters() {
+        for (invalid in listOf(
+            link.replace("/#", "/unrelated/../#"),
+            link.replace("/#", "/%2e/#"),
+            " $link",
+            link.replace("https:", "https:\n"),
+            link.replace("/#", "/?ignored#"),
+        )) {
+            assertThrows(invalid, IllegalArgumentException::class.java) { PairingLink.parse(invalid, origin) }
+        }
+    }
+
+    @Test fun retainsEquivalentHttpsOriginSpellingsWithoutAcceptingDifferentServices() {
+        assertEquals("mac-1", PairingLink.parse(link.replace("onrender.com/", "onrender.com:443/"), origin).macID)
+        assertEquals("mac-1", PairingLink.parse(link.replace("https://notify-remote", "HTTPS://NOTIFY-REMOTE"), origin).macID)
+    }
 }

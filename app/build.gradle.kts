@@ -14,8 +14,9 @@ android {
         applicationId = "app.notify.android"
         minSdk = 28
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
+        testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -27,9 +28,20 @@ android {
         signingConfig = signingConfigs.getByName("debug")
         isDebuggable = false
     }
+    buildTypes.create("layoutCheck") {
+        initWith(buildTypes.getByName("debug"))
+        applicationIdSuffix = ".layoutcheck"
+        versionNameSuffix = "-layoutcheck"
+        matchingFallbacks += "debug"
+    }
+    testBuildType = "layoutCheck"
     sourceSets["main"].jniLibs.srcDir("../crypto/jniLibs")
     packaging {
         jniLibs.useLegacyPackaging = false
+    }
+
+    tasks.matching { it.name == "processLayoutCheckGoogleServices" }.configureEach {
+        enabled = false
     }
 
     compileOptions {
@@ -64,8 +76,18 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.firebase:firebase-messaging:25.0.1")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
+    implementation("com.google.zxing:core:3.5.3")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
+    androidTestImplementation("junit:junit:4.13.2")
+    for (library in listOf("android.test.base", "android.test.runner")) {
+        androidTestCompileOnly(files(androidComponents.sdkComponents.sdkDirectory.map {
+            it.file("platforms/android-${android.compileSdk}/optional/$library.jar")
+        }))
+    }
 }

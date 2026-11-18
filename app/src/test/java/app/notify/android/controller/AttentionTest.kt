@@ -2,6 +2,7 @@ package app.notify.android.controller
 
 import app.notify.android.notifications.Attention
 import app.notify.android.notifications.NotificationState
+import app.notify.android.remote.RemoteStatus
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -15,6 +16,30 @@ class AttentionTest {
         assertFalse(NotificationState(true, false, true, true).enabled)
         assertFalse(NotificationState(true, true, false, true).enabled)
         assertFalse(NotificationState(true, true, true, false).enabled)
+    }
+    @Test fun setupIsOfferedOnlyAfterMatchingAccountAndApprovedEncryptedConnection() {
+        val account = Account("issuer", "owner")
+        val paired = ControllerState(account = account,
+            relationship = Relationship(account, "mac", "pin", "phone", "public", "Phone", true),
+            foreground = true, status = RemoteStatus("connected", "Encrypted channel connected."))
+        assertTrue(paired.shouldOfferNotificationSetup())
+        assertFalse(paired.copy(status = RemoteStatus("pending", "Awaiting Mac")).shouldOfferNotificationSetup())
+        assertFalse(paired.copy(foreground = false).shouldOfferNotificationSetup())
+        assertFalse(paired.copy(account = Account("issuer", "different")).shouldOfferNotificationSetup())
+        assertFalse(paired.copy(relationship = paired.relationship!!.copy(enrolled = false)).shouldOfferNotificationSetup())
+        assertFalse(paired.copy(notifications = NotificationState(cleanupPending = true)).shouldOfferNotificationSetup())
+    }
+
+    @Test fun previouslyOfferedSetupDoesNotNagAfterRelaunchOrPermissionDenial() {
+        val account = Account("issuer", "owner")
+        val base = ControllerState(account = account,
+            relationship = Relationship(account, "mac", "pin", "phone", "public", "Phone", true),
+            foreground = true, status = RemoteStatus("connected", "Connected"))
+        val restoredPreferences = NotificationState(permission = false, setupOffered = true)
+        assertFalse(base.copy(notifications = restoredPreferences).shouldOfferNotificationSetup())
+        assertFalse(base.copy(notifications = NotificationState(true, true, true, true)).shouldOfferNotificationSetup())
+        assertTrue(base.copy(notifications = NotificationState(true, true, true, false)).shouldOfferNotificationSetup())
+        assertFalse(restoredPreferences.enabled)
     }
     @Test fun onlyFreshGenericEventsCanDisplayAndDuplicateEventsAreIgnored() {
         assertEquals(event["eventID"], Attention.accept(event, now, emptySet()))

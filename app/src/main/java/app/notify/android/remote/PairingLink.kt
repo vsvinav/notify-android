@@ -9,6 +9,10 @@ data class PairingLink(val setupID: String, val macID: String, val macPublicKey:
     companion object {
         fun parse(value: String, origin: HttpUrl): PairingLink {
             require(value.length <= 2048) { "The pairing link is too long." }
+            require(origin.isHttps && value.none { it.isWhitespace() || it.code < 32 } &&
+                Regex("https://[^/\\\\?#]+/", RegexOption.IGNORE_CASE).matches(value.substringBefore('#'))) {
+                "Use the complete HTTPS pairing link from Notify on your Mac for this service."
+            }
             val url = value.toHttpUrlOrNull() ?: throw IllegalArgumentException("Scan the pairing QR code on your Mac.")
             require(url.isHttps && url.host == origin.host && url.port == origin.port &&
                 url.encodedPath == "/" && url.query == null && url.username.isEmpty() && url.password.isEmpty()) {

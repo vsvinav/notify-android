@@ -20,6 +20,7 @@ import java.security.ProviderException
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONException
 import org.json.JSONObject
@@ -31,12 +32,37 @@ data class ControllerState(
     val error: String? = null, val inbox: RequestInbox = RequestInbox(), val workspace: WorkspaceState = WorkspaceState(),
     val foreground: Boolean = false, val now: Long = 0, val review: ReplyReview? = null,
     val controlReview: ControlCommand? = null, val notices: String? = null,
+    val policyOffPending: Boolean = false,
     val notifications: NotificationState = NotificationState(),
+    val notificationSetupOpen: Boolean = false,
+    val notificationPermissionPending: Boolean = false,
+    val connectionTrace: TraceSnapshot = TraceSnapshot(),
+    val appearance: PhoneAppearance = PhoneAppearance.System,
 ) {
+    fun reconnectable(): Relationship? = relationship?.takeIf { foreground && it.enrolled && it.account == account }
+    fun shouldOfferNotificationSetup() = status.state == "connected" && reconnectable() != null &&
+        !notifications.setupOffered && !notifications.enabled && !notifications.cleanupPending
     val live get() = foreground && status.state == "connected" && inbox.isLive(now)
+    fun receiveRequests(requests: RequestSnapshot, receivedAt: Long): ControllerState {
+        val updated = if (requests.connected) inbox.receive(inbox.generation, true, requests.requests, receivedAt)
+            else inbox.copy(connected = false)
+        return copy(now = receivedAt, inbox = updated, review = review?.takeIf { review ->
+            requests.connected && updated.cards.any { it == review.card }
+        })
+    }
+    fun receiveWorkspace(snapshot: WorkspaceSnapshot, receivedAt: Long): ControllerState {
+        val updated = workspace.receive(snapshot, receivedAt)
+        return copy(now = receivedAt, workspace = updated, controlReview = controlReview?.takeIf {
+            if (it.isPolicy) updated.sessionID == it.sessionID && updated.session?.ticket == it.ticket &&
+                it.agentID.isEmpty() && updated.select(updated.sessionID).policyUnavailable(receivedAt, it.enabled == true) == null &&
+                updated.session?.dangerousAutoYes?.ticket == it.policyTicket
+            else if (it.isManagement || it.isSessionAction) runCatching { updated.validate(it, receivedAt) }.isSuccess
+            else updated.target == it.target && updated.unavailable(it.action, receivedAt) == null
+        })
+    }
     fun endAccountSession() = copy(account = null, inbox = RequestInbox(), workspace = WorkspaceState(),
         status = RemoteStatus("disconnected", "Sign in again to reconnect. Your Mac pairing is saved."),
-        review = null, controlReview = null)
+        review = null, controlReview = null, notificationSetupOpen = false)
     fun staleSnapshots() = copy(inbox = inbox.copy(connected = false), workspace = workspace.copy(receivedAt = null),
         review = null, controlReview = null)
     fun retireConnection(): ControllerState {
@@ -53,6 +79,9 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     val state = mutable.asStateFlow()
     private val service = ServiceClient(SERVICE_ORIGIN.toHttpUrl())
     private val prefs = application.getSharedPreferences("notify-relationship-v1", Application.MODE_PRIVATE)
+    private val appearancePrefs = application.getSharedPreferences("notify-appearance-v1", Application.MODE_PRIVATE)
+    private val appearancePreference = AppearancePreference({ appearancePrefs.getString("mode", null) },
+        { appearancePrefs.edit().putString("mode", it).commit() })
     private val store = RelationshipStore(object : RelationshipStorage {
         override fun read() = prefs.getString("relationship", null)
         override fun write(value: String?) {
@@ -73,6 +102,10 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     private var attentionOpened = false
     private val cleanup = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val notificationSettings = NotificationSettings(application)
+    private val notificationConsent = NotificationConsent()
+    private var notificationPermissionWork: Job? = null
+    private val connectionTrace = ConnectionTrace(SystemClock::elapsedRealtime)
+    private var traceUpdates: Job? = null
     private val notificationListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         viewModelScope.launch {
             refreshNotifications()
@@ -83,6 +116,7 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     init {
+        change { copy(appearance = appearancePreference.current) }
         notificationSettings.prefs.registerOnSharedPreferenceChangeListener(notificationListener)
         operation {
             val saved = withContext(Dispatchers.IO) { store.read() }
@@ -92,7 +126,12 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     }
     private fun change(block: ControllerState.() -> ControllerState) { mutable.value = mutable.value.block() }
     fun clearError() = change { copy(error = null) }
+    fun appearance(value: PhoneAppearance) = local {
+        appearancePreference.set(value)
+        change { copy(appearance = appearancePreference.current) }
+    }
     fun foreground(active: Boolean) {
+        connectionTrace.record(if (active) TraceEvent.FOREGROUND else TraceEvent.BACKGROUND)
         NotificationSettings.foreground = active
         refreshNotifications()
         change { copy(foreground = active, now = SystemClock.elapsedRealtime(), review = null, controlReview = null) }
@@ -106,6 +145,7 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
     private fun invalidate() {
+        connectionTrace.record(TraceEvent.SNAPSHOT_STALE, category = TraceCategory.SNAPSHOT)
         change { staleSnapshots() }
     }
     fun disconnect() {
@@ -119,6 +159,7 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         change { copy(status = RemoteStatus("disconnected", "Disconnected. Pairing is saved; no actions are queued.")) }
     }
     fun signIn(activity: Activity, register: Boolean, name: String) = operation {
+        cancelNotificationPermission()
         disconnect()
         val account = PasskeyAccount(service).authenticate(activity, register, name)
         change { copy(account = account, status = RemoteStatus("disconnected", "Signed in. Mac trust is separate; connect or pair below.")) }
@@ -128,12 +169,13 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
             refreshNotifications()
         } else if (state.value.notifications.consent && !state.value.notifications.registered) registerNotifications()
         val record = state.value.relationship
-        if (attentionOpened && record?.enrolled == true && record.account == account && state.value.foreground) {
+        if (record?.enrolled == true && record.account == account) {
             attentionOpened = false
-            connect(record)
+            if (state.value.reconnectable() != null) connect(record) else resumeConnection = true
         }
     }
     fun signOut() = operation {
+        cancelNotificationPermission()
         removeNotifications()
         disconnect()
         service.postScoped("/v1/account/logout", JSONObject())
@@ -176,7 +218,7 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         val generation = connectionGeneration
         val identity = withContext(Dispatchers.IO) { store.identity(record) }
         if (generation != connectionGeneration || !state.value.foreground) return
-        val remote = RemoteConnection(service, identity, record.macID, record.deviceID, decodeKey(record.macPublicKey)) { status ->
+        val remote = RemoteConnection(service, identity, record.macID, record.deviceID, decodeKey(record.macPublicKey), connectionTrace) { status ->
             viewModelScope.launch {
                 if (generation != connectionGeneration) return@launch
                 change { copy(status = status) }
@@ -193,30 +235,91 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         withContext(Dispatchers.IO) { remote.connect() }
     }
     fun forget() = operation {
+        cancelNotificationPermission()
         removeNotifications()
         disconnect()
         withContext(Dispatchers.IO) { store.forget() }
         change { copy(relationship = null, inbox = RequestInbox(), workspace = WorkspaceState()) }
     }
     fun refreshNotifications() = change { copy(notifications = notificationSettings.state()) }
+    fun startConnectionTrace() {
+        connectionTrace.start()
+        traceUpdates?.cancel()
+        traceUpdates = viewModelScope.launch {
+            do {
+                val snapshot = connectionTrace.snapshot()
+                change { copy(connectionTrace = snapshot) }
+                if (!snapshot.capturing) break
+                delay(500)
+            } while (true)
+        }
+    }
+    fun stopConnectionTrace() {
+        connectionTrace.stop()
+        traceUpdates?.cancel()
+        traceUpdates = null
+        change { copy(connectionTrace = this@ControllerViewModel.connectionTrace.snapshot()) }
+    }
+    fun showNotificationSetup() = local {
+        if (state.value.shouldOfferNotificationSetup()) {
+            notificationSettings.markSetupOffered()
+            change { copy(notificationSetupOpen = true, notifications = notificationSettings.state()) }
+        }
+    }
+    fun finishNotificationSetup() = change { copy(notificationSetupOpen = false) }
+    fun requestNotificationPermission(): Boolean {
+        if (state.value.busy || state.value.notificationPermissionPending) return false
+        return try {
+            notificationConsent.begin(state.value.account, state.value.relationship)
+            change { copy(notificationPermissionPending = true) }
+            true
+        } catch (error: IllegalStateException) { failure(error); false }
+    }
+    fun notificationPermissionResult(granted: Boolean) {
+        val request = notificationConsent.take() ?: return
+        notificationPermissionWork = viewModelScope.launch {
+            state.first { !it.busy }
+            change { copy(notificationPermissionPending = false) }
+            if (!notificationConsent.valid(request, state.value.account, state.value.relationship)) {
+                failure(IllegalStateException("Account or pairing changed. Alerts were not enabled; choose Enable alerts again."))
+            } else if (!granted) notificationPermissionDenied()
+            else operation { registerNotifications(request.relationship) }
+        }
+    }
+    private fun cancelNotificationPermission() {
+        notificationConsent.cancel()
+        notificationPermissionWork?.cancel()
+        notificationPermissionWork = null
+        change { copy(notificationPermissionPending = false) }
+    }
     fun notificationPermissionDenied() {
         refreshNotifications()
         change { copy(error = "Notifications were not allowed. They are not enabled; you can change this in Android settings.") }
     }
     fun openNotificationSettings() { notificationSettings.createChannel(); notificationSettings.openSettings() }
+    fun useLongerVibration() = local {
+        notificationSettings.useLongerVibration()
+        refreshNotifications()
+    }
     fun enableNotifications() = operation { registerNotifications() }
-    private suspend fun registerNotifications() {
+    private suspend fun registerNotifications(expected: Relationship? = null) {
         val record = checkNotNull(state.value.relationship) { "Pair with your Mac before enabling notifications." }
+        check(expected == null || expected == record) { "Pairing changed. Choose Enable alerts again." }
         val account = verifyAccount()
-        check(record.account == account) { "Sign in with this pairing's account. Notifications were not registered." }
+        check(record.account == account && state.value.relationship == record) {
+            "Sign in with this pairing's account. Notifications were not registered."
+        }
         try {
             val token = notificationSettings.beginRegistration()
             val identity = withContext(Dispatchers.IO) { store.identity(record) }
+            check(state.value.account == account && state.value.relationship == record) {
+                "Account or pairing changed. Choose Enable alerts again."
+            }
             PushRegistration({ path, body -> service.postScoped(path, body) }).update(record, token, identity::sign)
             notificationSettings.registered(token)
         } finally { refreshNotifications() }
     }
-    fun disableNotifications() = operation { removeNotifications() }
+    fun disableNotifications() = operation { cancelNotificationPermission(); removeNotifications() }
     private suspend fun removeNotifications() {
         notificationSettings.disableLocally()
         refreshNotifications()
@@ -251,25 +354,14 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
                     val requests = withContext(Dispatchers.IO) { Snapshots.requests(remote.request("state", JSONObject())) }
                     if (generation != connectionGeneration || inboxGeneration != state.value.inbox.generation) return@guarded
                     val now = SystemClock.elapsedRealtime()
-                    change {
-                        val updated = if (requests.connected) inbox.receive(inboxGeneration, true, requests.requests, now)
-                            else inbox.copy(connected = false)
-                        copy(inbox = updated, review = review?.takeIf { review ->
-                            requests.connected && updated.cards.any { it == review.card }
-                        })
-                    }
+                    change { receiveRequests(requests, now) }
                     val selected = state.value.workspace.sessionID
                     val snapshot = withContext(Dispatchers.IO) {
                         Snapshots.workspace(remote.request("workspace", JSONObject().put("sessionID", selected ?: JSONObject.NULL)))
                     }
                     if (generation != connectionGeneration || inboxGeneration != state.value.inbox.generation ||
                         selected != state.value.workspace.sessionID) return@guarded
-                    change {
-                        val updated = workspace.receive(snapshot, SystemClock.elapsedRealtime())
-                        copy(workspace = updated, controlReview = controlReview?.takeIf {
-                            updated.target == it.target && updated.unavailable(it.action, now) == null
-                        })
-                    }
+                    change { receiveWorkspace(snapshot, SystemClock.elapsedRealtime()) }
                 }
                 delay(2000)
             }
@@ -309,13 +401,41 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         change { copy(workspace = workspace.select(id, agentID), controlReview = null) }
     }
     fun draft(text: String) = local { change { copy(workspace = workspace.edit(text), controlReview = null) } }
+    fun creationDraft(value: SubagentCreation) = local {
+        change { copy(workspace = workspace.editCreation(value), controlReview = null) }
+    }
+    fun prepareManagement(action: String, helperID: String = "") = local {
+        check(state.value.live) { "Wait for a fresh Mac update." }
+        val command = state.value.workspace.prepareManagement(action, SystemClock.elapsedRealtime(), helperID)
+        if (action == "create_subagent") sendControl(command)
+        else change { copy(controlReview = command) }
+    }
     fun prepareControl(action: String) = local {
         check(state.value.live) { "Wait for a fresh Mac update." }
         val command = state.value.workspace.prepare(action, SystemClock.elapsedRealtime())
         if (action == "queue") sendControl(command) else change { copy(controlReview = command) }
     }
     fun confirmControl() { state.value.controlReview?.let(::sendControl) }
-    private fun sendControl(command: ControlCommand) = operation {
+    fun prepareSessionAction(action: String, rgb: Int? = null, target: String? = null) = local {
+        check(state.value.live) { "Wait for a fresh Mac update." }
+        val command = state.value.workspace.prepareSessionAction(action, SystemClock.elapsedRealtime(), rgb, target)
+        if (action in setOf("remove_session", "resume_session")) change { copy(controlReview = command) }
+        else sendControl(command)
+    }
+    fun preparePolicy(enabled: Boolean) = local {
+        check(state.value.live) { "Wait for a fresh Mac update. Off has not been confirmed." }
+        val command = state.value.workspace.select(state.value.workspace.sessionID).preparePolicy(enabled, SystemClock.elapsedRealtime())
+        if (enabled) change { copy(controlReview = command) }
+        else if (!state.value.policyOffPending) {
+            change { copy(policyOffPending = true, controlReview = null) }
+            viewModelScope.launch {
+                try { guarded { dispatchControl(command) } }
+                finally { change { copy(policyOffPending = false) } }
+            }
+        }
+    }
+    private fun sendControl(command: ControlCommand) = operation { dispatchControl(command) }
+    private suspend fun dispatchControl(command: ControlCommand) {
         change { copy(controlReview = null) }
         check(state.value.live) { "Wait for a fresh Mac update." }
         state.value.workspace.validate(command, SystemClock.elapsedRealtime())
@@ -325,17 +445,45 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         try {
             val result = checkNotNull(connection).request("control", command.json(), command.id)
             if (generation == connectionGeneration) {
-                check(result.bool("ok")) { "The Mac did not acknowledge this control. Check the exact target; nothing was resent." }
-                change { copy(workspace = workspace.acknowledge(command, result.text("commandID", 256, true), result.text("status", 64, true))) }
+                if (command.isPolicy && state.value.workspace.policyDeliveries[command.target]?.commandID != command.id) {
+                    acknowledged = true
+                    return
+                }
+                if (command.isPolicy) {
+                    val ok = result.bool("ok")
+                    check(result.text("commandID", 128, true).isNotBlank() &&
+                        result.text("status", 64, true) == if (ok) "applied" else "failed") {
+                        "Invalid Mac policy acknowledgment. Check this session on Mac."
+                    }
+                    val policy = Snapshots.policy(result.getJSONObject("dangerousAutoYes"))
+                    change { copy(workspace = workspace.acknowledgePolicy(command, policy, ok, result.optionalText("error")),
+                        error = if (ok) error else result.optionalText("error")) }
+                } else if (command.isSessionAction) {
+                    change { copy(workspace = workspace.acknowledgeSessionAction(command, result)) }
+                } else if (command.isManagement) {
+                    change { copy(workspace = workspace.acknowledgeManagement(command, result)) }
+                } else {
+                    check(result.bool("ok")) { "The Mac did not acknowledge this control. Check the exact target; nothing was resent." }
+                    change { copy(workspace = workspace.acknowledge(command, result.text("commandID", 256, true), result.text("status", 64, true))) }
+                }
                 acknowledged = true
             }
+        } catch (error: Exception) {
+            if (error is RemoteRequestFailure && error.notDispatched && command.isPolicy && command.enabled == false &&
+                generation == connectionGeneration) {
+                change { copy(workspace = workspace.rejectPolicyBeforeDispatch(command, error.message.orEmpty())) }
+                acknowledged = true
+            }
+            if (error is CancellationException || !command.isPolicy ||
+                state.value.workspace.policyDeliveries[command.target]?.commandID == command.id) throw error
+            acknowledged = true
         } finally {
             if (!acknowledged) change { copy(workspace = workspace.uncertain(command)) }
         }
     }
     fun notices() = operation {
         val text = withContext(Dispatchers.IO) {
-            listOf("notify-notifications.txt", "notify-crypto.txt").joinToString("\n\n") { name ->
+            listOf("notify-camera.txt", "notify-notifications.txt", "notify-crypto.txt").joinToString("\n\n") { name ->
                 getApplication<Application>().assets.open("third-party/$name").bufferedReader().use { it.readText() }
             }
         }
@@ -381,6 +529,7 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         }) }
     }
     override fun onCleared() {
+        connectionTrace.stop()
         notificationSettings.prefs.unregisterOnSharedPreferenceChangeListener(notificationListener)
         val old = connection
         cleanup.launch { try { old?.close(); service.close() } finally { cleanup.cancel() } }
