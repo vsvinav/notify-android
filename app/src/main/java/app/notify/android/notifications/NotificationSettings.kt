@@ -22,31 +22,72 @@ class NotificationSettings(context: Context) {
     private val context = context.applicationContext
     internal val prefs = context.getSharedPreferences("notify-notifications-v1", Context.MODE_PRIVATE)
     private val manager = context.getSystemService(NotificationManager::class.java)
+    val channelID: String
+        get() = if (prefs.getBoolean("longerVibration", manager.getNotificationChannel(CHANNEL) == null))
+            LONGER_CHANNEL else CHANNEL
+
     fun state(): NotificationState = NotificationState(
         consent = prefs.getBoolean("consent", false),
         permission = permissionGranted() && manager.areNotificationsEnabled(),
-        channel = (manager.getNotificationChannel(CHANNEL)?.importance ?: NotificationManager.IMPORTANCE_NONE) >
+        channel = (manager.getNotificationChannel(channelID)?.importance ?: NotificationManager.IMPORTANCE_NONE) >
             NotificationManager.IMPORTANCE_NONE,
         registered = prefs.getString("registered", "")?.let { it.isNotEmpty() && it == prefs.getString("tokenHash", "") } == true,
         cleanupPending = !prefs.getBoolean("consent", false) && prefs.getBoolean("routePossible", false),
         setupOffered = prefs.getBoolean("setupOffered", false),
+        longerVibration = channelID == LONGER_CHANNEL,
     )
     fun permissionGranted() = Build.VERSION.SDK_INT < 33 ||
         context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
     fun markSetupOffered() = save(prefs.edit().putBoolean("setupOffered", true))
 
     fun createChannel() {
-        val channel = NotificationChannel(CHANNEL, "Mac attention", NotificationManager.IMPORTANCE_DEFAULT).apply {
+        val id = channelID
+        if (manager.getNotificationChannel(id) == null) manager.createNotificationChannel(newChannel(id))
+    }
+
+    fun useLongerVibration() {
+        val previous = manager.getNotificationChannel(channelID)
+        if (manager.getNotificationChannel(LONGER_CHANNEL) == null) {
+            val channel = newChannel(LONGER_CHANNEL, previous?.importance ?: NotificationManager.IMPORTANCE_DEFAULT)
+            previous?.let {
+                channel.setSound(it.sound, it.audioAttributes)
+                channel.enableVibration(it.shouldVibrate())
+                channel.lockscreenVisibility = it.lockscreenVisibility
+                channel.setShowBadge(it.canShowBadge())
+                channel.enableLights(it.shouldShowLights())
+                channel.lightColor = it.lightColor
+                channel.group = it.group
+            }
+            manager.createNotificationChannel(channel)
+        }
+        val destination = checkNotNull(manager.getNotificationChannel(LONGER_CHANNEL)) {
+            "Could not create the longer-vibration channel. Your previous selection was kept."
+        }
+        check(previous == null || (
+            destination.importance <= previous.importance &&
+            (previous.sound != null || destination.sound == null) &&
+            (previous.shouldVibrate() || !destination.shouldVibrate()) &&
+            (previous.canBypassDnd() || !destination.canBypassDnd()) &&
+            (previous.group?.let { manager.getNotificationChannelGroup(it)?.isBlocked } != true ||
+                destination.group?.let { manager.getNotificationChannelGroup(it)?.isBlocked } == true)
+        )) {
+            "The longer-vibration channel has louder Android settings. Your previous selection was kept. " +
+                "Open Android notification settings and match its disabled or muted choices before trying again."
+        }
+        save(prefs.edit().putBoolean("longerVibration", true))
+    }
+
+    private fun newChannel(id: String, importance: Int = NotificationManager.IMPORTANCE_DEFAULT) =
+        NotificationChannel(id, if (id == LONGER_CHANNEL) "Mac attention (longer vibration)" else "Mac attention", importance).apply {
             description = "Private reminders to open Notify and check your Mac"
             lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
             enableVibration(true)
-            vibrationPattern = longArrayOf(0, 65, 85, 65, 150, 110)
+            vibrationPattern = if (id == LONGER_CHANNEL) longArrayOf(0, 300, 180, 450)
+                else longArrayOf(0, 65, 85, 65, 150, 110)
             setSound(Uri.parse("android.resource://${context.packageName}/raw/notify_attention"),
                 AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
         }
-        manager.createNotificationChannel(channel)
-    }
     suspend fun beginRegistration(): String {
         createChannel()
         check(permissionGranted() && state().permission && state().channel) {
@@ -87,7 +128,7 @@ class NotificationSettings(context: Context) {
     fun openSettings() {
         context.startActivity(Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
             .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-            .putExtra(Settings.EXTRA_CHANNEL_ID, CHANNEL).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            .putExtra(Settings.EXTRA_CHANNEL_ID, channelID).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
     private fun save(editor: android.content.SharedPreferences.Editor) {
         check(editor.commit()) { "Could not save notification preferences. Check phone storage." }
@@ -97,6 +138,7 @@ class NotificationSettings(context: Context) {
 
     companion object {
         const val CHANNEL = "notify-attention-v1"
+        private const val LONGER_CHANNEL = "notify-attention-long-v1"
         const val NOTIFICATION_ID = 1
         const val OPEN_ATTENTION = "app.notify.android.OPEN_ATTENTION"
         @Volatile var foreground = false

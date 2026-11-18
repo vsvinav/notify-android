@@ -27,14 +27,15 @@ class NotifyMessagingService : FirebaseMessagingService() {
         if (NotificationSettings.foreground || now - prefs.getLong("lastAlert", 0) < 30000) return
         if (!prefs.edit().putLong("lastAlert", now).commit()) return
         settings.createChannel()
+        val channelID = settings.channelID
         val tap = PendingIntent.getActivity(this, 0,
             Intent(this, MainActivity::class.java).setAction(NotificationSettings.OPEN_ATTENTION)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val public = Notification.Builder(this, NotificationSettings.CHANNEL)
+        val public = Notification.Builder(this, channelID)
             .setSmallIcon(R.drawable.ic_notification).setContentTitle("Notify")
             .setContentText("Open Notify to check for updates.").build()
-        val notification = Notification.Builder(this, NotificationSettings.CHANNEL)
+        val notification = Notification.Builder(this, channelID)
             .setSmallIcon(R.drawable.ic_notification).setContentTitle("Your Mac needs attention")
             .setContentText("Open Notify to check its current state.").setContentIntent(tap)
             .setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(public)

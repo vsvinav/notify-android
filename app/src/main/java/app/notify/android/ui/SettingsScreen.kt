@@ -72,13 +72,19 @@ internal fun Settings(
                 EnableAlertsAction(if (state.notifications.consent) "Refresh notification registration" else "Enable notifications",
                     state, enableAlerts)
                 TextButton(onClick = controller::openNotificationSettings) { Text("Android sound, vibration & permission settings") }
+                Text(if (state.notifications.longerVibration) "Vibration: longer two-pulse pattern"
+                    else "Vibration: original short pattern", style = MaterialTheme.typography.titleSmall)
+                if (!state.notifications.longerVibration) OutlinedButton(
+                    onClick = controller::useLongerVibration, enabled = !state.busy,
+                    modifier = Modifier.heightIn(min = 48.dp)) { Text("Use longer vibration") }
+                Supporting("Longer uses two pulses: 300 ms, a short pause, then 450 ms. Switching keeps muted or disabled alerts off. Android controls vibration strength and Do Not Disturb.")
                 if (state.notifications.consent || state.notifications.cleanupPending) OutlinedButton(
                     onClick = controller::disableNotifications, enabled = !state.busy, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text(if (state.notifications.cleanupPending) "Finish removing notification routing" else "Turn notifications off")
                 }
                 HorizontalDivider()
                 Supporting("Optional alerts use Google Firebase delivery. Only a generic attention signal is sent—never chat, commands or request text. Tapping opens Notify; it cannot approve anything.")
-                Supporting("Notify includes a soft two-note sound and a short three-pulse vibration. Android’s channel, silent mode and Do Not Disturb remain in control. Enabled does not verify physical delivery, sound or vibration.")
+                Supporting("Notify includes a soft two-note sound. Android’s channel, silent mode and Do Not Disturb remain in control. Enabled does not verify physical delivery, sound or vibration.")
                 Supporting("Delivery is best effort; your Mac must be awake and online. If a token rotates while you’re signed out, sign in and refresh registration here.")
             }
             SettingsSection.Pairing -> {
@@ -133,7 +139,8 @@ private fun SectionTitle(title: String) {
 @Composable
 private fun SettingsLink(title: String, detail: String, onClick: () -> Unit) {
     TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
-        contentPadding = PaddingValues(vertical = 8.dp)) {
+        shape = MaterialTheme.shapes.medium,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

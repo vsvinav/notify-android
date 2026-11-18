@@ -568,7 +568,7 @@ private fun Conversation(workspace: WorkspaceState, position: FeedPosition, tool
                     shape = MaterialTheme.shapes.large,
                     modifier = Modifier.fillMaxWidth().padding(start = if (message.kind == "user") 32.dp else 0.dp),
                 ) {
-                    Column(Modifier.padding(if (message.kind == "user") 14.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("${if (message.kind == "user") "You" else if (message.kind == "assistant") workspace.session?.agent ?: "Assistant" else message.kind} · ${message.title}",
                             style = MaterialTheme.typography.labelLarge)
                         SelectionContainer { Text(message.detail, fontFamily = if (tools) FontFamily.Monospace else FontFamily.Default) }

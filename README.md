@@ -24,10 +24,10 @@ and access to the compatible Notify internet service.
 For updates, install the new APK over Notify without uninstalling or clearing its
 data. Updates must use the same signing identity to retain the saved pairing.
 
-**Version note:** this development branch contains the **0.3.0** QR scanner,
-reconnect improvements, Mac-style agents and matching amber lightning icon.
-The latest published APK is **[0.2.0 preview](https://github.com/vsvinav/notify-android/releases/tag/v0.2.0-beta.1)**;
-it does not contain all changes shown here. A source commit is not a new APK release.
+**Latest published prerelease:** **[0.2.0 beta](https://github.com/vsvinav/notify-android/releases/tag/v0.2.0-beta.1)**.
+The unreleased 0.3.0 work includes the QR scanner, reconnect improvements,
+Mac-style agents and matching amber lightning icon. The interface below describes
+that development version, not all features in the published APK.
 
 ## Interface previews
 
@@ -70,6 +70,12 @@ camera, notification or control behavior.
    Android notification permission where required, then registers this phone
    through your signed-in account. Alerts are not shown as On until permission,
    channel availability and registration are confirmed.
+
+**After restarting Notify on the Mac:** turn **Enable internet** on again.
+Internet access starts off on every Mac app launch; same-Wi-Fi access being on
+does not enable the Android internet connection. If the phone remains Connecting
+or Waiting for Mac, check this switch before trying Reconnect. Do not reset or
+re-pair solely because the Mac's internet access was off.
 
 The QR supplies the invitation and pinned Mac key. This build supports only
 `https://notify-remote.onrender.com`; a QR for another service is rejected and
@@ -186,6 +192,15 @@ or Do Not Disturb. The original generated cue is reproducible with
 `python3 crypto/generate-attention-sound.py`.
 Camera permission is requested only when choosing Scan. Vibration uses the existing
 normal VIBRATE permission and channel settings, not a separate runtime dialog.
+
+In the unreleased 0.3.0 build, new installations default to two longer pulses:
+300 ms, a 180 ms pause, then 450 ms. Existing installations keep their original
+channel until you choose **Settings → Notifications → Use longer vibration**.
+Switching preserves muted/disabled alerts and does not change consent or register
+the phone again. An already customized destination channel is left unchanged;
+if switching would make alerts louder or re-enable them, Notify keeps the old
+selection and asks you to resolve the difference in Android settings. Longer
+pulses do not override the phone's vibration strength, silent mode or Do Not Disturb.
 Notify does not request storage, location, contacts, microphone or accessibility
 permissions for this setup.
 

@@ -283,6 +283,10 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         change { copy(error = "Notifications were not allowed. They are not enabled; you can change this in Android settings.") }
     }
     fun openNotificationSettings() { notificationSettings.createChannel(); notificationSettings.openSettings() }
+    fun useLongerVibration() = local {
+        notificationSettings.useLongerVibration()
+        refreshNotifications()
+    }
     fun enableNotifications() = operation { registerNotifications() }
     private suspend fun registerNotifications(expected: Relationship? = null) {
         val record = checkNotNull(state.value.relationship) { "Pair with your Mac before enabling notifications." }

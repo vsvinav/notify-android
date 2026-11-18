@@ -16,6 +16,7 @@ android {
         targetSdk = 35
         versionCode = 3
         versionName = "0.3.0"
+        testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -27,9 +28,20 @@ android {
         signingConfig = signingConfigs.getByName("debug")
         isDebuggable = false
     }
+    buildTypes.create("layoutCheck") {
+        initWith(buildTypes.getByName("debug"))
+        applicationIdSuffix = ".layoutcheck"
+        versionNameSuffix = "-layoutcheck"
+        matchingFallbacks += "debug"
+    }
+    testBuildType = "layoutCheck"
     sourceSets["main"].jniLibs.srcDir("../crypto/jniLibs")
     packaging {
         jniLibs.useLegacyPackaging = false
+    }
+
+    tasks.matching { it.name == "processLayoutCheckGoogleServices" }.configureEach {
+        enabled = false
     }
 
     compileOptions {
@@ -72,4 +84,10 @@ dependencies {
     testImplementation("org.json:json:20240303")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
+    androidTestImplementation("junit:junit:4.13.2")
+    for (library in listOf("android.test.base", "android.test.runner")) {
+        androidTestCompileOnly(files(androidComponents.sdkComponents.sdkDirectory.map {
+            it.file("platforms/android-${android.compileSdk}/optional/$library.jar")
+        }))
+    }
 }
