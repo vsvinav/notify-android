@@ -18,12 +18,14 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
@@ -39,6 +41,51 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class SessionLayoutTest : InstrumentationTestCase() {
+    fun testPhoneAppearanceAppliesShippingThemeLive() {
+        fixture(content = { _, _, _ ->
+            var appearance by remember { mutableStateOf(PhoneAppearance.System) }
+            NotifyTheme(appearance) {
+                Column {
+                    AppearanceChoices(appearance) { appearance = it }
+                    Text("Phone appearance: ${appearance.name}")
+                    Text("Shipping surface: ${MaterialTheme.colorScheme.surface}")
+                }
+            }
+        }) {
+            bounds("System"); bounds("Light"); bounds("Dark")
+            var dark: AccessibilityNodeInfo? = node("Dark")
+            while (dark != null && !dark.isClickable) dark = dark.parent
+            assertNotNull(dark)
+            dark!!.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            instrumentation.waitForIdleSync()
+            bounds("Phone appearance: Dark")
+        }
+    }
+
+    fun testSessionSettingsExposeNamedNativeColorsAndExactActions() {
+        for (enlarged in listOf(false, true)) fixture(enlarged, { state, _, _ ->
+            val original = state.workspace.session!!
+            val session = original.copy(connected = false, sessionActions = SessionActions(
+                "metadata", "original", "saved", 0x010203, true,
+                listOf(SessionColor("Sky", 0xA6C8FF)), true, true, true, "available", "",
+                supported = true))
+            val workspace = state.workspace.copy(snapshot = state.workspace.snapshot!!.copy(sessions = listOf(session)))
+            SessionSettings(state.copy(workspace = workspace), {}, { _, _, _ -> })
+        }) {
+            bounds("Session settings"); bounds("Session color"); bounds("Sky")
+            val queue = ArrayDeque<AccessibilityNodeInfo>()
+            instrumentation.uiAutomation.rootInActiveWindow?.let(queue::add)
+            var scroll: AccessibilityNodeInfo? = null
+            while (queue.isNotEmpty()) {
+                val item = queue.removeFirst()
+                if (item.isScrollable) { scroll = item; break }
+                for (index in 0 until item.childCount) item.getChild(index)?.let(queue::add)
+            }
+            assertNotNull(scroll)
+            repeat(12) { scroll!!.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD); instrumentation.waitForIdleSync() }
+            bounds("Resume on Mac…"); bounds("Remove from Notify…")
+        }
+    }
     fun testAgentsExposeAddEvenWhenTheMacDoesNotSupportIt() {
         fixture(content = { state, _, _ -> AgentTeam(state, Modifier.fillMaxSize(), {}) }) {
             bounds("Add subagent")
@@ -167,7 +214,7 @@ class SessionLayoutTest : InstrumentationTestCase() {
                 activity.setContent {
                     CompositionLocalProvider(LocalDensity provides Density(
                         LocalDensity.current.density, if (enlarged) 1.3f else 1f)) {
-                        MaterialTheme(colorScheme = if (enlarged) darkColorScheme() else lightColorScheme()) {
+                        NotifyTheme(if (enlarged) PhoneAppearance.Dark else PhoneAppearance.Light) {
                             Surface(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
                                 Box(Modifier.fillMaxSize()) {
                                     Box(Modifier.width(if (enlarged) 320.dp else 448.dp).fillMaxHeight()) {

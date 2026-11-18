@@ -76,6 +76,11 @@ internal class FeedPosition {
     var following by mutableStateOf(true)
 }
 
+@Composable
+internal fun NotifyTheme(appearance: PhoneAppearance = PhoneAppearance.System, content: @Composable () -> Unit) {
+    MaterialTheme(colorScheme = if (appearance.isDark(isSystemInDarkTheme())) dark else light, content = content)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
@@ -103,7 +108,7 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
         }
     }
     val canGoBack = state.notices != null || route == ControllerRoute.Notifications || destination != Destination.Chat
-    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) dark else light) {
+    NotifyTheme(state.appearance) {
         BackHandler(canGoBack || state.review != null || state.controlReview != null, back)
         val title = when {
             state.notices != null -> "Third-party notices"
@@ -174,6 +179,8 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
                 "dangerous_auto_yes" -> "Enable Dangerous Auto-yes?"
                 "remove_subagent" -> "Remove this ended helper?"
                 "stop_idle_subagents" -> "Stop idle helpers in this session?"
+                "remove_session" -> "Remove from Notify?"
+                "resume_session" -> "Resume saved session on Mac?"
                 "stop" -> "Stop this exact target?"
                 else -> "Interrupt the main agent?"
             },
@@ -182,15 +189,19 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
                     "dangerous_auto_yes" -> "Enable dangerous mode"
                     "remove_subagent" -> "Remove from list"
                     "stop_idle_subagents" -> "Stop idle >10 min"
+                    "remove_session" -> "Remove cached row"
+                    "resume_session" -> "Launch original CLI"
                     else -> "Confirm"
                 }) {
-                if (command.isManagement) Evidence("Selected session", state.workspace.session?.name ?: command.sessionID)
+                if (command.isManagement || command.isSessionAction) Evidence("Selected session", state.workspace.session?.name ?: command.sessionID)
                 Evidence("Session", command.sessionID)
                 Evidence("Ticket", command.ticket)
                 Evidence("Target", if (command.action == "stop_idle_subagents") "Eligible helpers in this session only"
                     else if (command.agentID.isEmpty()) "Main agent"
                     else "${state.workspace.detail?.agents?.firstOrNull { it.id == command.agentID }?.name ?: "Helper"} · ${command.agentID}")
-                Text(if (command.isPolicy) "Currently waiting eligible tools may immediately be approved. Ongoing eligible tools may also be approved, including destructive work. Questions stay manual.\n\nThis applies only to this session. It stays enabled after your PHONE disconnects until manually disabled or the session stops. Provider disconnects and errors still turn it off.\n\nThis replaces normal session Auto-yes; the two modes cannot be enabled together."
+                Text(if (command.action == "remove_session") "Remove only this disconnected cached row from Notify. This does not stop a live owner, delete CLI history or project files, or unpair this phone. Discovery can bring the history back. The Mac rechecks that it is still disconnected."
+                    else if (command.action == "resume_session") "Open this saved session’s original ${state.workspace.session?.agent ?: "agent"} CLI in iTerm2 on the Mac. Mac sign-in or Automation prompts may require attention there. Saved CLI model, mode and permissions (including prior allow-all) can carry over. This action sends no approvals or connection consent and does not enable Notify’s session Auto-yes. A live owner or an in-progress launch blocks another launch.\n\nA successful launch is not a connected agent. Wait for the original session to connect. Failed or uncertain launches are never automatically retried, including after reconnect."
+                    else if (command.isPolicy) "Currently waiting eligible tools may immediately be approved. Ongoing eligible tools may also be approved, including destructive work. Questions stay manual.\n\nThis applies only to this session. It stays enabled after your PHONE disconnects until manually disabled or the session stops. Provider disconnects and errors still turn it off.\n\nThis replaces normal session Auto-yes; the two modes cannot be enabled together."
                     else if (command.action == "remove_subagent") "Remove only this ended helper from the runtime list. This is not Stop. No source files are deleted. A retained helper already absent from the runtime will report failure, not a removal."
                     else if (command.action == "stop_idle_subagents") "The Mac rechecks helpers continuously observed idle for more than 10 minutes. Eligible helpers and their descendants may stop. Main agents and other sessions are never targeted. Skipped, failed or uncertain results will be reported. This is a manual action, not a schedule; no files are deleted."
                     else if (command.action == "interrupt") "Stop the current main-agent turn and send the instruction below instead."
@@ -393,6 +404,12 @@ internal fun Sessions(state: ControllerState, controller: ControllerViewModel,
     openSessions: () -> Unit = {}) {
     val workspace = state.workspace
     var pane by rememberSaveable(workspace.sessionID) { mutableStateOf(SessionPane.Chat) }
+    var sessionSettings by rememberSaveable(workspace.sessionID) { mutableStateOf(false) }
+    if (sessionSettings) {
+        BackHandler { sessionSettings = false }
+        SessionSettings(state, { sessionSettings = false }, controller::prepareSessionAction)
+        return
+    }
     BackHandler(pane != SessionPane.Chat) { pane = SessionPane.Chat }
     val select: (String) -> Unit = { agentID ->
         controller.selectSession(workspace.sessionID, agentID)
@@ -419,6 +436,9 @@ internal fun Sessions(state: ControllerState, controller: ControllerViewModel,
                 }
             }
             DangerousPolicy(state, controller)
+            TextButton(onClick = { sessionSettings = true }, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("Session settings")
+            }
             val decisions = decisionCards(state, workspace.sessionID).size
             TabRow(selectedTabIndex = pane.ordinal) {
                 SessionPane.entries.forEach { tab ->

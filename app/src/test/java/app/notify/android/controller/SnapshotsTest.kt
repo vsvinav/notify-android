@@ -9,6 +9,37 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SnapshotsTest {
+    @Test fun sessionAppearanceRejectsNonIntegerRgbRatherThanCoercingOrIgnoringIt() {
+        val wire = JSONObject("""{"connected":true,"sessionActionsControl":true,"sessions":[{"id":"s","name":"Saved","project":"","agent":"claude","state":"idle","connected":false,"ticket":"t","capabilities":{"steering":false,"subagentChat":false,"subagentStop":false},"sessionActions":{"ticket":"m","sourceID":"original","group":"saved","rgb":"123","overridden":true,"colors":[{"name":"Sky","rgb":10930431}],"editable":true,"removable":true,"resumable":true,"resumeStatus":"available","resumeDetail":""}}]}""")
+        for (bad in listOf("123", true, -1, 0x1000000, 12.5, JSONObject.NULL)) {
+            wire.getJSONArray("sessions").getJSONObject(0).getJSONObject("sessionActions").put("rgb", bad)
+            assertThrows(IllegalArgumentException::class.java) { Snapshots.workspace(wire) }
+        }
+        val row = wire.getJSONArray("sessions").getJSONObject(0)
+        row.getJSONObject("sessionActions").put("rgb", 123)
+        wire.remove("sessionActionsControl")
+        val legacyHelper = Snapshots.workspace(wire).sessions.single().sessionActions!!
+        assertEquals(123, legacyHelper.rgb)
+        assertFalse(legacyHelper.supported)
+        wire.put("sessionActionsControl", true)
+        assertTrue(Snapshots.workspace(wire).sessions.single().sessionActions!!.supported)
+        val actions = row.getJSONObject("sessionActions")
+        for (invalid in listOf(1, true, "", "x".repeat(257))) {
+            actions.put("resumeAuthority", JSONObject().put("epoch", invalid).put("retired", 0))
+            assertThrows(IllegalArgumentException::class.java) { Snapshots.workspace(wire) }
+        }
+        for (invalid in listOf("1", true, -1, 1.5, 9_007_199_254_740_992L, JSONObject.NULL)) {
+            actions.put("resumeAuthority", JSONObject().put("epoch", "source-epoch").put("retired", invalid))
+            assertThrows(IllegalArgumentException::class.java) { Snapshots.workspace(wire) }
+        }
+        actions.put("resumeAuthority", JSONObject().put("epoch", "source-epoch").put("retired", 9_007_199_254_740_991L))
+        assertEquals(ResumeAuthority("source-epoch", 9_007_199_254_740_991L),
+            Snapshots.workspace(wire).sessions.single().sessionActions!!.resumeAuthority)
+        actions.remove("resumeAuthority")
+        assertNull(Snapshots.workspace(wire).sessions.single().sessionActions!!.resumeAuthority)
+        row.remove("sessionActions")
+        assertNull(Snapshots.workspace(wire).sessions.single().sessionActions)
+    }
     @Test fun liveManagementCatalogNeedsBothHelperAndNativeSupport() {
         val wire = JSONObject("""{"connected":true,"sessions":[{"id":"s","name":"Build","project":"","agent":"copilot","state":"working","connected":true,"ticket":"t","managementTicket":"m","subagentTypes":["reviewer"],"subagentModels":[],"capabilities":{"steering":true,"subagentChat":true,"subagentStop":true,"subagentCreate":true,"subagentRemove":true,"subagentCleanup":true}}]}""")
         assertFalse(Snapshots.workspace(wire).sessions.single().capabilities.subagentCreate)

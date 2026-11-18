@@ -4,13 +4,17 @@ import app.notify.android.controller.*
 import app.notify.android.remote.RequestCard
 
 internal enum class SessionGroup(val title: String) {
-    NeedsYou("Needs you"), Monitoring("Monitoring"), NotConnected("Not connected")
+    NeedsYou("Needs you"), Monitoring("Monitoring"), NotConnected("Not connected"), Saved("Saved")
 }
 
 internal fun decisionCards(state: ControllerState, sessionID: String?): List<RequestCard> =
     state.inbox.visibleCards.filter { sessionID == null || it.request.sessionID == sessionID }
 
 internal fun sessionGroup(state: ControllerState, session: Session): SessionGroup = when {
+    session.sessionActions?.group == "saved" -> SessionGroup.Saved
+    session.sessionActions?.group == "needs_you" -> SessionGroup.NeedsYou
+    session.sessionActions?.group == "monitoring" -> SessionGroup.Monitoring
+    session.sessionActions?.group == "not_connected" -> SessionGroup.NotConnected
     session.state == "waiting" || state.inbox.visibleCards.any { it.request.sessionID == session.id } -> SessionGroup.NeedsYou
     !session.connected -> SessionGroup.NotConnected
     else -> SessionGroup.Monitoring

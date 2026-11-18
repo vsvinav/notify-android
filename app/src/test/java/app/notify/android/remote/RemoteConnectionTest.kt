@@ -30,6 +30,9 @@ import app.notify.android.controller.ControllerState
 import app.notify.android.controller.Snapshots
 import app.notify.android.controller.WorkspaceState
 import app.notify.android.controller.SubagentCreation
+import app.notify.android.controller.SessionActions
+import app.notify.android.controller.SessionColor
+import app.notify.android.controller.sessionActionStatuses
 
 /** Real HTTPS/WSS with a deterministic plaintext crypto fixture, NOT an MLS interoperability test. */
 class RemoteConnectionTest {
@@ -135,6 +138,87 @@ class RemoteConnectionTest {
              "dangerousAutoYes":{"ticket":"p","offTicket":"$token","revision":1,"enabled":true,"normalEnabled":false}
             }],"detail":null}
         """)), 0)
+
+    @Test fun savedResumeTraversesHttpsRpcWithoutClaimingConnectedOrReplayingItsUuid() = runBlocking {
+        grant(); val relay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        val base = policyWorkspace()
+        var state = base.copy(snapshot = base.snapshot!!.copy(sessions = listOf(base.session!!.copy(connected = false,
+            sessionActions = SessionActions("m", "original", "saved", 0x123456, true,
+                listOf(SessionColor("Sky", 0xA6C8FF)), true, true, true, "available", "", supported = true)))))
+        val command = state.prepareSessionAction("resume_session", 0)
+        state.validate(command, 0)
+        state = state.sending(command)
+        val request = async { connection.request("control", command.json(), command.id) }
+        val frame = withTimeout(3000) { while (relay.frames.isEmpty()) delay(10); relay.frames.take() }
+        val data = frame.getJSONObject("payload").getJSONObject("data")
+        assertEquals("resume_session", data.getString("action"))
+        assertEquals(setOf("id", "sessionID", "ticket", "action", "text", "sessionTicket"), data.keys().asSequence().toSet())
+        relay.send(JSONObject().put("id", command.id).put("status", 200).put("data",
+            JSONObject().put("ok", true).put("commandID", "native-command").put("status", "launched")
+                .put("sessionID", "s").put("sessionTicket", "m").put("action", "resume_session").put("detail", "Launch completed")))
+        state = state.acknowledgeSessionAction(command, request.await())
+        assertFalse(state.session!!.connected)
+        assertTrue(state.sessionResults.single().status.contains("connection is not confirmed"))
+        assertTrue(runCatching { connection.request("control", command.json(), command.id) }.isFailure)
+        assertTrue(runCatching { state.prepareSessionAction("resume_session", 0) }.isFailure)
+        assertTrue(relay.frames.isEmpty())
+    }
+
+    @Test fun staleSessionReceiptAcrossHttpsSettlesWithoutReplayAndAllowsFreshExplicitReview() = runBlocking {
+        grant(); val relay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        val base = policyWorkspace()
+        val saved = base.session!!.copy(connected = false,
+            sessionActions = SessionActions("m", "original", "saved", 0x123456, true,
+                emptyList(), true, true, true, "available", "", moveDown = "peer", supported = true))
+        val peer = saved.copy(id = "peer", ticket = "peer-work",
+            sessionActions = saved.sessionActions!!.copy(ticket = "peer-meta", sourceID = "other", moveDown = null, moveUp = "s"))
+        for (action in listOf("resume_session", "reset_session_color", "move_session")) {
+            var state = base.copy(snapshot = base.snapshot!!.copy(sessions = listOf(saved, peer)))
+                .edit("keep draft").select("peer").edit("keep other draft").select("s")
+            val target = if (action == "move_session") "peer" else null
+            val command = state.prepareSessionAction(action, 0, moveTarget = target)
+            state = state.sending(command)
+            val request = async { connection.request("control", command.json(), command.id) }
+            val frame = withTimeout(3000) { while (relay.frames.isEmpty()) delay(10); relay.frames.take() }
+            assertEquals(command.id, frame.getString("id"))
+            val freshSnapshot = state.snapshot!!.copy(sessions = listOf(
+                saved.copy(sessionActions = saved.sessionActions.copy(ticket = "fresh-$action")), peer))
+            state = state.receive(freshSnapshot, 0)
+            relay.send(JSONObject().put("id", command.id).put("status", 200).put("data",
+                JSONObject().put("ok", false).put("status", "failed").put("sessionID", command.sessionID)
+                    .put("sessionTicket", command.sessionTicket).put("action", action)
+                    .put("detail", "Session actions are stale. Refresh the Mac workspace; nothing was dispatched.")))
+            val receipt = request.await()
+            assertFalse(receipt.has("notDispatched"))
+            state = state.acknowledgeSessionAction(command, receipt)
+            assertFalse(state.sessionResults.single().blocked)
+            assertEquals(freshSnapshot, state.snapshot)
+            assertEquals("keep draft", state.draft)
+            assertEquals("keep other draft", state.select("peer").draft)
+            assertTrue(runCatching { connection.request("control", command.json(), command.id) }.isFailure)
+            assertTrue(runCatching {
+                connection.request("control", command.json().put("sessionTicket", "fresh-$action"), command.id)
+            }.isFailure)
+            assertTrue("A failed receipt must not replay or automatically create another command", relay.frames.isEmpty())
+            val reviewed = state.prepareSessionAction(action, 0, moveTarget = target)
+            assertNotEquals(command.id, reviewed.id)
+            assertEquals("fresh-$action", reviewed.sessionTicket)
+            state.validate(reviewed, 0)
+            state = state.sending(reviewed)
+            val freshRequest = async { connection.request("control", reviewed.json(), reviewed.id) }
+            val freshFrame = withTimeout(3000) { while (relay.frames.isEmpty()) delay(10); relay.frames.take() }
+            assertEquals(reviewed.id, freshFrame.getString("id"))
+            relay.send(JSONObject().put("id", reviewed.id).put("status", 200).put("data",
+                JSONObject().put("ok", true).put("status", sessionActionStatuses[action]).put("commandID", "native-id")
+                    .put("sessionID", reviewed.sessionID).put("sessionTicket", reviewed.sessionTicket)
+                    .put("action", action).put("detail", "Exact native result")))
+            state = state.acknowledgeSessionAction(reviewed, freshRequest.await())
+            assertEquals(freshSnapshot, state.snapshot)
+            assertFalse(state.session!!.connected)
+        }
+    }
 
     @Test fun typedCreationTraversesHttpsRpcAndOnlyCreatedClearsItsUneditedSessionForm() = runBlocking {
         grant(); val relay = Relay().also { it.enqueue() }

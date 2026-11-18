@@ -224,7 +224,8 @@ private fun SessionDrawerRow(session: Session, presentation: AgentPresentation, 
         modifier = Modifier.fillMaxWidth().heightIn(min = 76.dp).semantics { selected = isSelected },
     ) {
         Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+            Surface(shape = CircleShape, color = (session.sessionActions?.rgb ?: session.color)?.let(::sessionRgb)
+                ?: MaterialTheme.colorScheme.surfaceContainerHighest) {
                 AgentIllustration(presentation.presence, Modifier.size(40.dp), isLead = true, portrait = true)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {

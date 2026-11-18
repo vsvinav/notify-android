@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.dp
 import app.notify.android.controller.ControllerState
 import app.notify.android.controller.ControllerViewModel
 import app.notify.android.controller.SERVICE_ORIGIN
+import app.notify.android.controller.PhoneAppearance
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -25,6 +26,10 @@ internal fun Settings(
     key(section) { Page {
         when (section) {
             SettingsSection.Overview -> {
+                SectionTitle("Appearance · this phone")
+                AppearanceChoices(state.appearance, controller::appearance)
+                Supporting("Only Notify on this phone. System follows Android; your Mac and Android’s global settings are unchanged.")
+                HorizontalDivider()
                 SectionTitle("Connection")
                 Text("Your Mac", style = MaterialTheme.typography.titleMedium)
                 Supporting(connectionLabel(state))
@@ -134,6 +139,17 @@ internal fun Settings(
 @Composable
 private fun SectionTitle(title: String) {
     Text(title, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleMedium)
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun AppearanceChoices(value: PhoneAppearance, change: (PhoneAppearance) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        PhoneAppearance.entries.forEach { mode ->
+            FilterChip(selected = value == mode, onClick = { change(mode) }, label = { Text(mode.name) },
+                modifier = Modifier.heightIn(min = 48.dp))
+        }
+    }
 }
 
 @Composable

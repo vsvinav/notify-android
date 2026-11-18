@@ -114,7 +114,8 @@ the drawer stays above it; when space is too short, its search, Settings, and
 results scroll together instead of leaving the results with no room. Search and
 filter reported sessions by name/project, provider or **Needs you**. Session rows
 show character portraits and reported running/idle helper counts when available,
-grouped into **Needs you**, **Monitoring**, and **Not connected**.
+grouped into **Needs you**, **Monitoring**, **Not connected**, and (with updated
+Mac metadata) **Saved**. Search and filters retain the Mac's order.
 
 Each selected session has **Chat**, **Decision**, and **Agents** tabs. **Agents**
 uses the Mac's illustrated characters and warm light/dark palette: the main agent
@@ -139,6 +140,54 @@ instead and history is available through **Show conversation**, so the editor
 cannot be squeezed to zero height. Drafts and
 conversation positions remain tied to their exact targets during this app session.
 Changing filters never selects a different session.
+
+### Session settings (unreleased 0.3.0 source)
+
+Open **Session settings** for the selected session. These controls require matching
+updated Mac **and** helper source builds; older builds explicitly remain unavailable.
+They are not in the published 0.2.0 APK.
+
+- **Session color / Reset automatic:** use the Mac's twenty named colors, or
+  restore its original eight-color automatic assignment. Existing custom RGB
+  colors remain visible, even when not in that palette. Overrides and order use
+  the original session identity across reconnects. A failed save is not success.
+- **Move up / Move down:** move only within the Mac's current status group.
+  Targets include rows hidden by phone search/provider filters. The Mac rechecks
+  both exact rows and persists the shared order; replies and snapshots do not
+  reorder it.
+- **Remove from Notify…:** confirmation removes only an actually disconnected
+  cached row. It never stops a live owner, deletes CLI history/project files, or
+  unpairs the phone. Discovery can bring the history back. A reconnected row is
+  rejected, and disappearance is never fabricated before a native update.
+- **Resume on Mac…:** confirmation names the saved session and launches its
+  original Copilot or Claude CLI in iTerm2, using only Mac-owned identity, history
+  and project information. The original executable, history and iTerm2 must be
+  available. A live owner or an in-progress launch prevents duplicates. Sign-in
+  or macOS Automation prompts may need attention on the Mac. Saved CLI modes and
+  permissions, including prior allow-all, can carry over; this action sends no
+  approvals or connection consent and does not enable Notify's session Auto-yes.
+  **Launched is not connected:** the Mac separately reports checking/launching,
+  awaiting connection, detected owner, or an actual matching Notify connection.
+  After 30 seconds without an owner, it warns that launch remains unconfirmed.
+  Failed/uncertain launches are not retried automatically or replayed on reconnect;
+  check the Mac before any further launch. If the Mac observes that launch's
+  original owner and later sees it exit back to Saved, it can authorize a new
+  explicit resume review—even when the owner never connected to Notify or this
+  phone missed intermediate updates and another phone subsequently resumed it.
+  A replaced Mac app/session/project does not count as proof that an old
+  uncertain launch finished.
+
+A stale session-setting review rejected before dispatch is a visible failure,
+not an uncertain write. Refresh and review a new action; its old command is not
+replayed. Color/order changes alone never clear an uncertain resume.
+
+**Settings → Appearance · this phone** offers **System** (default), **Light**, and
+**Dark**. It saves locally and applies the existing Notify theme immediately.
+It changes neither macOS nor Android's global appearance. Notification controls
+are unchanged. New controls have headless/unit coverage; native visual, touch,
+TalkBack, keyboard and real CLI-resume acceptance still require separate device/Mac
+testing. Layout fixtures now use the shipping Notify theme; compiling them is not
+a claim that screenshots or device tests were run.
 
 **Dangerous Auto-yes (unpublished source preview):** with matching updated Mac
 and helper builds, the session header controls the existing Mac-owned policy.
@@ -205,11 +254,10 @@ routing cleanup. Back returns from details, diagnostics, and third-party notices
 
 ### Remaining parity work
 
-This is not full Mac feature parity. Planned work includes richer conversation
-presentation; synchronized
-session colors/order; removing disconnected sessions, resume and relevant settings.
-These need exact capability/target checks and sensitive-action consent, not
-phone-side emulation.
+This is not full Mac feature parity. Richer conversation presentation remains
+planned. Session colors/order, disconnected-cache removal, supported resume and
+phone-local appearance are unreleased source controls described above, not
+features added to older downloaded APKs.
 
 Terminal/folder integration, extension installation and macOS floating windows
 remain Mac-only. Native Android camera/permission behavior, visual layout and

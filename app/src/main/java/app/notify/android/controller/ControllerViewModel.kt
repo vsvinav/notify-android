@@ -37,6 +37,7 @@ data class ControllerState(
     val notificationSetupOpen: Boolean = false,
     val notificationPermissionPending: Boolean = false,
     val connectionTrace: TraceSnapshot = TraceSnapshot(),
+    val appearance: PhoneAppearance = PhoneAppearance.System,
 ) {
     fun reconnectable(): Relationship? = relationship?.takeIf { foreground && it.enrolled && it.account == account }
     fun shouldOfferNotificationSetup() = status.state == "connected" && reconnectable() != null &&
@@ -55,7 +56,7 @@ data class ControllerState(
             if (it.isPolicy) updated.sessionID == it.sessionID && updated.session?.ticket == it.ticket &&
                 it.agentID.isEmpty() && updated.select(updated.sessionID).policyUnavailable(receivedAt, it.enabled == true) == null &&
                 updated.session?.dangerousAutoYes?.ticket == it.policyTicket
-            else if (it.isManagement) runCatching { updated.validate(it, receivedAt) }.isSuccess
+            else if (it.isManagement || it.isSessionAction) runCatching { updated.validate(it, receivedAt) }.isSuccess
             else updated.target == it.target && updated.unavailable(it.action, receivedAt) == null
         })
     }
@@ -78,6 +79,9 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     val state = mutable.asStateFlow()
     private val service = ServiceClient(SERVICE_ORIGIN.toHttpUrl())
     private val prefs = application.getSharedPreferences("notify-relationship-v1", Application.MODE_PRIVATE)
+    private val appearancePrefs = application.getSharedPreferences("notify-appearance-v1", Application.MODE_PRIVATE)
+    private val appearancePreference = AppearancePreference({ appearancePrefs.getString("mode", null) },
+        { appearancePrefs.edit().putString("mode", it).commit() })
     private val store = RelationshipStore(object : RelationshipStorage {
         override fun read() = prefs.getString("relationship", null)
         override fun write(value: String?) {
@@ -112,6 +116,7 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     init {
+        change { copy(appearance = appearancePreference.current) }
         notificationSettings.prefs.registerOnSharedPreferenceChangeListener(notificationListener)
         operation {
             val saved = withContext(Dispatchers.IO) { store.read() }
@@ -121,6 +126,10 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
     }
     private fun change(block: ControllerState.() -> ControllerState) { mutable.value = mutable.value.block() }
     fun clearError() = change { copy(error = null) }
+    fun appearance(value: PhoneAppearance) = local {
+        appearancePreference.set(value)
+        change { copy(appearance = appearancePreference.current) }
+    }
     fun foreground(active: Boolean) {
         connectionTrace.record(if (active) TraceEvent.FOREGROUND else TraceEvent.BACKGROUND)
         NotificationSettings.foreground = active
@@ -407,6 +416,12 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
         if (action == "queue") sendControl(command) else change { copy(controlReview = command) }
     }
     fun confirmControl() { state.value.controlReview?.let(::sendControl) }
+    fun prepareSessionAction(action: String, rgb: Int? = null, target: String? = null) = local {
+        check(state.value.live) { "Wait for a fresh Mac update." }
+        val command = state.value.workspace.prepareSessionAction(action, SystemClock.elapsedRealtime(), rgb, target)
+        if (action in setOf("remove_session", "resume_session")) change { copy(controlReview = command) }
+        else sendControl(command)
+    }
     fun preparePolicy(enabled: Boolean) = local {
         check(state.value.live) { "Wait for a fresh Mac update. Off has not been confirmed." }
         val command = state.value.workspace.select(state.value.workspace.sessionID).preparePolicy(enabled, SystemClock.elapsedRealtime())
@@ -443,6 +458,8 @@ class ControllerViewModel(application: Application) : AndroidViewModel(applicati
                     val policy = Snapshots.policy(result.getJSONObject("dangerousAutoYes"))
                     change { copy(workspace = workspace.acknowledgePolicy(command, policy, ok, result.optionalText("error")),
                         error = if (ok) error else result.optionalText("error")) }
+                } else if (command.isSessionAction) {
+                    change { copy(workspace = workspace.acknowledgeSessionAction(command, result)) }
                 } else if (command.isManagement) {
                     change { copy(workspace = workspace.acknowledgeManagement(command, result)) }
                 } else {

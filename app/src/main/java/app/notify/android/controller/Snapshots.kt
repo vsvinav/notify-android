@@ -44,6 +44,7 @@ object Snapshots {
         bounded(value)
         val policyControls = value.bool("dangerousAutoYesControl", false) && value.bool("dangerousAutoYesOffEpoch", false)
         val managementControls = value.bool("subagentManagementControl", false)
+        val sessionControls = value.bool("sessionActionsControl", false)
         val sessions = value.objects("sessions", 256).map { s ->
             val c = s.getJSONObject("capabilities")
             val policy = if (!s.has("dangerousAutoYes")) null else policy(s.getJSONObject("dangerousAutoYes"))
@@ -61,7 +62,9 @@ object Snapshots {
                 s.text("state", 256), s.bool("connected"), s.text("ticket", 256),
                 Capabilities(c.bool("steering"), c.bool("subagentChat"), c.bool("subagentStop"), capable && policyControls && policy?.hasOffAuthority == true,
                     create && managementControls, remove && managementControls, cleanup && managementControls),
-                s.reportedCount("runningCount"), s.reportedCount("idleCount"), policy, managementTicket, types, models)
+                s.reportedCount("runningCount"), s.reportedCount("idleCount"), policy, managementTicket, types, models,
+                if (s.has("color")) s.text("color", 7).also { require(it.matches(Regex("#[a-fA-F0-9]{6}"))) }.drop(1).toInt(16) else null,
+                if (s.has("sessionActions")) sessionActions(s.getJSONObject("sessionActions"), sessionControls) else null)
         }
         require(sessions.map { it.id }.distinct().size == sessions.size) { "Ambiguous session identifiers." }
         val detail = if (!value.has("detail") || value.isNull("detail")) null else {
@@ -97,6 +100,32 @@ object Snapshots {
             value.bool("enabled"), value.bool("normalEnabled"), if (value.has("offTicket")) value.text("offTicket", 256, true) else null)
         require(!(policy.enabled && policy.normalEnabled)) { "Conflicting Mac Auto-yes modes." }
         return policy
+    }
+    private fun rgb(value: JSONObject): Int {
+        val rgb = value.opt("rgb")
+        require(rgb is Int && rgb in 0..0xFFFFFF) { "Invalid Mac RGB color. Alpha and coercion are not supported." }
+        return rgb
+    }
+    private fun sessionActions(a: JSONObject, supported: Boolean): SessionActions {
+        val group = a.text("group", 32, true)
+        require(group in setOf("saved", "needs_you", "monitoring", "not_connected")) { "Invalid Mac session group." }
+        val status = a.text("resumeStatus", 32, true)
+        require(status in setOf("available", "unavailable", "launching", "awaiting_connection", "connected",
+            "owner_detected", "unconfirmed", "failed", "unknown")) { "Invalid Mac launch state." }
+        val colors = a.objects("colors", 20).map { SessionColor(it.text("name", 64, true), rgb(it)) }
+        require(colors.map { it.rgb }.distinct().size == colors.size) { "Ambiguous Mac color catalog." }
+        return SessionActions(a.text("ticket", 256, true), a.text("sourceID", 128, true), group, rgb(a), a.bool("overridden"),
+            colors, a.bool("editable"), a.bool("removable"), a.bool("resumable"), status, a.text("resumeDetail", 4000),
+            if (!a.has("moveUp") || a.isNull("moveUp")) null else a.text("moveUp", 128, true),
+            if (!a.has("moveDown") || a.isNull("moveDown")) null else a.text("moveDown", 128, true), supported,
+            if (!a.has("resumeAuthority") || a.isNull("resumeAuthority")) null else resumeAuthority(a.getJSONObject("resumeAuthority")))
+    }
+    private fun resumeAuthority(value: JSONObject): ResumeAuthority {
+        val retired = value.opt("retired")
+        require(retired is Int || retired is Long) { "Invalid native resume retirement generation." }
+        val generation = (retired as Number).toLong()
+        require(generation in 0..9_007_199_254_740_991L) { "Invalid native resume retirement generation." }
+        return ResumeAuthority(value.text("epoch", 256, true), generation)
     }
     private fun JSONObject.reportedCount(name: String): Int? {
         if (!has(name)) return null
