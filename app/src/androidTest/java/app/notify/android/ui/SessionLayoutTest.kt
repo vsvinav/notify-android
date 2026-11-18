@@ -41,6 +41,80 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class SessionLayoutTest : InstrumentationTestCase() {
+    fun testNativeMarkdownKeepsCodeCopyExact() {
+        val code = "  val exact = 1  \r\n\r\n"
+        val source = "# Fixture heading\n\n**Bold** and *soft*\n\n```kotlin\r\n${code}```\r\n"
+        fixture(content = { _, _, _ ->
+            Column { MessageMarkdown(source); CopyButton(source) }
+        }) {
+            var original: android.content.ClipData? = null
+            instrumentation.runOnMainSync {
+                val clipboard = instrumentation.targetContext.getSystemService(android.content.ClipboardManager::class.java)
+                original = clipboard.primaryClip
+                original?.let { clip ->
+                    // Replacing a URI clip can revoke the grants needed to restore it.
+                    assertTrue("Copy fixture needs a text-only or empty clipboard; existing clip was not changed",
+                        (0 until clip.itemCount).all { index ->
+                            val item = clip.getItemAt(index)
+                            item.uri == null && item.intent == null
+                        })
+                }
+            }
+            try {
+                bounds("Fixture heading")
+                bounds("Bold and soft")
+                click("Copy code")
+                instrumentation.runOnMainSync {
+                    val clip = instrumentation.targetContext.getSystemService(android.content.ClipboardManager::class.java).primaryClip
+                    assertTrue("Code copy must match the synthetic fixture exactly",
+                        clip?.itemCount == 1 && clip.getItemAt(0).text?.toString() == code)
+                }
+                click("Copy text")
+                instrumentation.runOnMainSync {
+                    val clip = instrumentation.targetContext.getSystemService(android.content.ClipboardManager::class.java).primaryClip
+                    assertTrue("Message copy must match the synthetic source exactly",
+                        clip?.itemCount == 1 && clip.getItemAt(0).text?.toString() == source)
+                }
+            } finally {
+                instrumentation.runOnMainSync {
+                    val clipboard = instrumentation.targetContext.getSystemService(android.content.ClipboardManager::class.java)
+                    original?.let(clipboard::setPrimaryClip) ?: clipboard.clearPrimaryClip()
+                }
+            }
+        }
+    }
+
+    fun testNativeSavedReaderNeedsNoAccountAndContainsNoComposer() {
+        val history = ConversationHistory(listOf(CachedConversation(DraftTarget("fixture", "helper"),
+            "Synthetic session", "Synthetic helper", 123, true,
+            listOf(CachedMessage("assistant", "", "Synthetic saved response", "1")))))
+        for (enlarged in listOf(false, true)) fixture(enlarged, { _, _, _ ->
+            SavedConversations(history) {}
+        }) {
+            bounds("Saved conversations")
+            bounds("Synthetic helper")
+            click("Synthetic helper")
+            bounds("Synthetic saved response")
+            val queue = ArrayDeque<AccessibilityNodeInfo>()
+            instrumentation.uiAutomation.rootInActiveWindow?.let(queue::add)
+            while (queue.isNotEmpty()) {
+                val node = queue.removeFirst()
+                if (node.packageName?.toString() != instrumentation.targetContext.packageName) continue
+                assertFalse("Saved reader never restores a composer", node.isEditable)
+                assertFalse("Saved reader never offers action authority", node.text?.toString() in
+                    setOf("Send", "Turn off now", "Enable Dangerous Auto-yes…", "Stop"))
+                for (index in 0 until node.childCount) node.getChild(index)?.let(queue::add)
+            }
+        }
+    }
+
+    private fun click(text: String) {
+        var target = node(text)
+        while (!target.isClickable) target = checkNotNull(target.parent)
+        assertTrue(target.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+        instrumentation.waitForIdleSync()
+    }
+
     fun testComposerRemainsEditableWhileDeliveryIsBlockedOrBusy() {
         fixture(content = { state, controller, _ ->
             val workspace = state.workspace

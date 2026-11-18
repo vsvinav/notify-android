@@ -30,6 +30,10 @@ internal fun Settings(
                 AppearanceChoices(state.appearance, controller::appearance)
                 Supporting("Only Notify on this phone. System follows Android; your Mac and Android’s global settings are unchanged.")
                 HorizontalDivider()
+                Supporting("Saved conversations are encrypted on this phone. Signing out or forgetting the pairing clears them; disconnecting does not.")
+                OutlinedButton(onClick = controller::clearSavedConversations, enabled = !state.busy) {
+                    Text("Clear saved conversations")
+                }
                 SectionTitle("Connection")
                 Text("Your Mac", style = MaterialTheme.typography.titleMedium)
                 Supporting(connectionLabel(state))
@@ -130,7 +134,7 @@ internal fun Settings(
         }
     } }
     if (forget) Confirmation("Forget this pairing?", { forget = false }, { forget = false; controller.forget() }, !state.busy) {
-        Text("Delete this phone’s saved relationship and AndroidKeyStore channel identity. This does not delete your account or revoke the phone on the Mac.")
+        Text("Delete this phone’s saved conversations, relationship and AndroidKeyStore channel identity. This does not delete your account or revoke the phone on the Mac.")
         Text("Revoke the phone in Notify on your Mac too. Connecting again requires a new in-person pairing.")
         Text("If notifications were enabled, their routing must be removed while signed in before this key is deleted.")
     }

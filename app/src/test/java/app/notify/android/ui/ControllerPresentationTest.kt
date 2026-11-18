@@ -7,6 +7,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ControllerPresentationTest {
+    @Test fun savedReaderIsExplicitAndReachableWithoutServiceSignIn() {
+        val history = ConversationHistory(listOf(CachedConversation(DraftTarget("s", ""), "Build", "Main",
+            1, false, listOf(CachedMessage("assistant", "", "Saved reply", "1")))))
+        val state = ControllerState(relationship = relationship, savedScope = ConversationScope.from(relationship),
+            savedHistory = history)
+        assertEquals(ControllerRoute.SignIn, controllerRoute(state))
+        assertEquals("Offline", controllerRoute(state.copy(offlineReader = true)).name)
+        assertEquals("Disconnected", connectionLabel(state.copy(offlineReader = true)))
+        assertEquals(ControllerRoute.SignIn, controllerRoute(state.copy(offlineReader = true, account = Account("issuer", "other"))))
+        assertEquals(ControllerRoute.Pairing, controllerRoute(state.copy(offlineReader = true, relationship = null)))
+    }
     @Test fun shortViewportMustScrollSurroundingsRatherThanStarveTheEditor() {
         assertNull("120dp leaves no editor after the fixed controls", composerHeightLimit(120f, 1f))
         assertNull("A positive but unusably small editor also needs fallback", composerHeightLimit(240f, 1f))
