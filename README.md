@@ -24,10 +24,12 @@ and access to the compatible Notify internet service.
 For updates, install the new APK over Notify without uninstalling or clearing its
 data. Updates must use the same signing identity to retain the saved pairing.
 
-**Latest published prerelease:** **[0.2.0 beta](https://github.com/vsvinav/notify-android/releases/tag/v0.2.0-beta.1)**.
-The unreleased 0.3.0 work includes the QR scanner, reconnect improvements,
-Mac-style agents and matching amber lightning icon. The interface below describes
-that development version, not all features in the published APK.
+**Current prerelease:** **[0.3.0 beta](https://github.com/vsvinav/notify-android/releases/tag/v0.3.0-beta.1)**.
+The release includes the installable APK and its SHA-256 checksum, QR scanning,
+reconnect improvements, Mac-style agents, the matching amber lightning icon and
+the controls below. This is an agent-tested preview, not full physical-device
+acceptance; read its known limitations before installing. New session controls
+require matching updated Mac/helper builds.
 
 ## Native screenshots
 
@@ -161,10 +163,10 @@ cannot be squeezed to zero height. Drafts and
 conversation positions remain tied to their exact targets during this app session.
 Changing filters never selects a different session.
 
-### Session settings (unreleased 0.3.0 source)
+### Session settings (0.3.0 beta)
 
 Open **Session settings** for the selected session. These controls require matching
-updated Mac **and** helper source builds; older builds explicitly remain unavailable.
+updated Mac **and** helper builds; older builds explicitly remain unavailable.
 They are not in the published 0.2.0 APK.
 
 - **Session color / Reset automatic:** use the Mac's twenty named colors, or
@@ -208,7 +210,7 @@ are unchanged. New controls have headless/unit coverage and eleven on-device
 fictional layout checks using the shipping theme. TalkBack, keyboard interaction
 and real CLI-resume acceptance still require separate device/Mac testing.
 
-**Dangerous Auto-yes (unpublished source preview):** with matching updated Mac
+**Dangerous Auto-yes (0.3.0 beta):** with matching updated Mac
 and helper builds, the session header controls the existing Mac-owned policy.
 Enabling requires a high-risk confirmation: waiting and future eligible tools
 may be approved immediately, including destructive work. Questions remain manual;
@@ -227,7 +229,7 @@ capability loss, errors, dispatch failures and Mac shutdown retain native
 fail-safe resets. These controls are not in the published 0.2.0 APK. Native
 visibility checks passed; no real session policy was changed during those checks.
 
-**Helper management (unpublished source preview):** open the selected session’s
+**Helper management (0.3.0 beta):** open the selected session’s
 **Agents** tab and choose **Add subagent**. The native form offers only live Mac
 agent-type and model IDs. **Configured default** leaves model selection to the
 runtime, including when no explicit models are advertised. Review credit usage
@@ -276,7 +278,7 @@ routing cleanup. Back returns from details, diagnostics, and third-party notices
 
 This is not full Mac feature parity. Richer conversation presentation remains
 planned. Session colors/order, disconnected-cache removal, supported resume and
-phone-local appearance are unreleased source controls described above, not
+phone-local appearance are 0.3.0 beta controls described above, not
 features added to older downloaded APKs.
 
 Terminal/folder integration, extension installation and macOS floating windows
@@ -298,7 +300,7 @@ or Do Not Disturb. The original generated cue is reproducible with
 Camera permission is requested only when choosing Scan. Vibration uses the existing
 normal VIBRATE permission and channel settings, not a separate runtime dialog.
 
-In the unreleased 0.3.0 build, new installations default to two longer pulses:
+In the 0.3.0 beta build, new installations default to two longer pulses:
 300 ms, a 180 ms pause, then 450 ms. Existing installations keep their original
 channel until you choose **Settings → Notifications → Use longer vibration**.
 Switching preserves muted/disabled alerts and does not change consent or register
