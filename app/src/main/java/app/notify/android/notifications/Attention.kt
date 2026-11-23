@@ -1,5 +1,18 @@
 package app.notify.android.notifications
 
+import org.json.JSONObject
+
+internal fun notificationAuthorityCurrent(raw: String?, operation: Long, blocked: Boolean, now: Long): Boolean {
+    if (blocked) return false
+    if (raw == null) return operation == 0L
+    if (raw.length > 16384) return false
+    return try {
+        val saved = JSONObject(raw)
+        saved.opt("version") == 1 && saved.getLong("operation") == operation &&
+            (saved.isNull("committed") || saved.getJSONObject("committed").getLong("expiresAt") > now)
+    } catch (_: Exception) { false }
+}
+
 data class NotificationState(
     val consent: Boolean = false, val permission: Boolean = false,
     val channel: Boolean = false, val registered: Boolean = false,

@@ -30,7 +30,7 @@ import app.notify.android.controller.Session
 import app.notify.android.controller.filterSessions
 import kotlinx.coroutines.launch
 
-internal enum class Destination { Chat, Requests, Settings }
+internal enum class Destination { Chat, Requests, Dashboard, Settings }
 internal enum class SettingsSection(val title: String) {
     Overview("Settings"), Connection("Connection"), Notifications("Notifications"),
     Pairing("Account & pairing"), Diagnostics("Connection diagnostics")
@@ -64,6 +64,7 @@ internal fun ChatShell(
     onNavigate: (Destination) -> Unit,
     onSession: (String) -> Unit,
     onConnection: () -> Unit,
+    onAttention: () -> Unit = {},
     content: @Composable (openSessions: () -> Unit) -> Unit,
 ) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
@@ -104,8 +105,13 @@ internal fun ChatShell(
                     },
                 )
             }) { padding ->
-                Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
-                    content(open)
+                BoxWithConstraints(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
+                    val stripHeight = maxOf(96.dp, maxHeight * .35f)
+                    Column(Modifier.fillMaxSize()) {
+                        PendingAttentionStrip(state, onAttention, { onNavigate(Destination.Requests) },
+                            Modifier.heightIn(max = stripHeight))
+                        Box(Modifier.weight(1f)) { content(open) }
+                    }
                 }
             }
         }
@@ -129,6 +135,9 @@ private fun SessionDrawer(
     var search by rememberSaveable { mutableStateOf("") }
     var provider by rememberSaveable { mutableStateOf<String?>(null) }
     var needsAttention by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state.decisionFocus) {
+        if (state.decisionFocus > 0) { search = ""; provider = null; needsAttention = false }
+    }
     val sessions = state.workspace.snapshot?.sessions.orEmpty()
     val filtered = remember(sessions, search, provider, needsAttention, state.inbox.visibleCards) {
         filterSessions(sessions, search, provider, false)
@@ -138,6 +147,11 @@ private fun SessionDrawer(
     val browseControls: @Composable () -> Unit = {
         NavigationDrawerItem(label = { Text("Needs you") }, badge = { Text("${state.inbox.visibleCards.size}") },
             selected = destination == Destination.Requests, onClick = { navigate(Destination.Requests) })
+        if (state.dashboardEnabled && state.panel.available) {
+            val badge = state.panel.feed?.tabs?.sumOf { it.badge ?: 0 } ?: 0
+            NavigationDrawerItem(label = { Text("Dashboard") }, badge = { if (badge > 0) Text("$badge") },
+                selected = destination == Destination.Dashboard, onClick = { navigate(Destination.Dashboard) })
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(provider == null, { provider = null }, label = { Text("All providers") })
             (sessions.map { it.agent } + listOfNotNull(provider)).distinct().sorted().forEach { agent ->

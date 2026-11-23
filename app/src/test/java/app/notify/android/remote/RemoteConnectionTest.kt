@@ -4,9 +4,16 @@ import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -33,6 +40,8 @@ import app.notify.android.controller.SubagentCreation
 import app.notify.android.controller.SessionActions
 import app.notify.android.controller.SessionColor
 import app.notify.android.controller.sessionActionStatuses
+import app.notify.android.controller.PanelPending
+import app.notify.android.controller.PanelState
 
 /** Real HTTPS/WSS with a deterministic plaintext crypto fixture, NOT an MLS interoperability test. */
 class RemoteConnectionTest {
@@ -89,6 +98,7 @@ class RemoteConnectionTest {
         private val selectedProtocol: String = "notify-relay-v1",
         private val welcomeBytes: String = "[1,2]",
         private val autoReady: Boolean = true,
+        private val autoAckPanel: Boolean = false,
     ) : WebSocketListener() {
         lateinit var socket: WebSocket
         val frames = LinkedBlockingQueue<JSONObject>()
@@ -110,7 +120,11 @@ class RemoteConnectionTest {
                 }
                 "hello" -> send(if (autoReady) JSONObject().put("type", "ready").put("epoch", epoch)
                     else JSONObject().put("type", "pending"), sender)
-                else -> frames.add(value)
+                else -> {
+                    frames.add(value)
+                    if (autoAckPanel && value.optJSONObject("payload")?.optString("path") == "panel_action")
+                        ack(value.getString("id"))
+                }
             }
         }
         fun send(value: JSONObject, sender: String = "native") {
@@ -406,6 +420,145 @@ class RemoteConnectionTest {
         assertEquals(1, relay.frames.size)
     }
 
+    @Test fun panelPathsAreAllowedWithReadAndMutationTimeouts() = runBlocking {
+        assertEquals(12_000L, requestTimeout("panel"))
+        assertEquals(12_000L, requestTimeout("state"))
+        assertEquals(25_000L, requestTimeout("panel_action"))
+        assertEquals(25_000L, requestTimeout("control"))
+        assertNull(requestTimeout("panel/action"))
+        grant()
+        val relay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        for (path in listOf("panel", "panel_action")) {
+            val response = async { connection.request(path, JSONObject().put("actionId", "status:APA-1").put("preview", true)) }
+            val frame = withTimeout(3000) { while (relay.frames.isEmpty()) delay(10); relay.frames.take() }
+            assertEquals(path, frame.getJSONObject("payload").getString("path"))
+            relay.ack(frame.getString("id"))
+            assertTrue(response.await().getBoolean("ok"))
+        }
+        val rejected = async { runCatching { connection.request("panel_action", JSONObject()) } }
+        val frame = withTimeout(3000) { while (relay.frames.isEmpty()) delay(10); relay.frames.take() }
+        relay.send(JSONObject().put("id", frame.getString("id")).put("status", 503)
+            .put("data", JSONObject().put("ok", false).put("error", "Session not connected")))
+        val failure = rejected.await().exceptionOrNull() as RemoteRequestFailure
+        assertEquals("Session not connected", failure.message)
+        assertEquals(503, failure.status)
+    }
+
+    @Test fun dashboardOffRejectsSendWaitingAtTransportLock() =
+        dashboardWaitingAtTransportLock(preview = false)
+
+    @Test fun dashboardOffThenOnCannotResurrectWaitingSend() =
+        dashboardWaitingAtTransportLock(preview = false, enableAgain = true)
+
+    @Test fun dashboardPreviewOffCannotDispatchAfterTransportLockWait() =
+        dashboardWaitingAtTransportLock(preview = true)
+
+    @Test fun dashboardReplacedPendingCannotDispatchAfterTransportLockWait() =
+        dashboardWaitingAtTransportLock(preview = false, replacePending = true)
+
+    private fun dashboardPending(id: String, preview: Boolean = false) =
+        ControllerState(foreground = true, status = RemoteStatus("connected", ""), now = 100,
+            inbox = RequestInbox().receive(0, true, emptyList(), 100),
+            panel = PanelState(fresh = true, pending = PanelPending(id, "fictional-action", !preview)))
+            .dashboardSetting(true)
+
+    private fun dashboardWaitingAtTransportLock(preview: Boolean, enableAgain: Boolean = false,
+        replacePending: Boolean = false) = runBlocking {
+        val caller = ThreadLocal<Boolean>()
+        val atClock = CountDownLatch(1)
+        val resumeClock = CountDownLatch(1)
+        val dispatchThread = AtomicReference<Thread>()
+        val clockHook = AtomicReference<(() -> Unit)?>({
+            dispatchThread.set(Thread.currentThread())
+            atClock.countDown()
+            check(resumeClock.await(5, TimeUnit.SECONDS)) { "Fixture did not release dispatch clock" }
+        })
+        connection.close()
+        connection = newConnection(clockWall = {
+            if (caller.get() == true) clockHook.getAndSet(null)?.invoke()
+            System.currentTimeMillis()
+        })
+        grant(); val relay = Relay(autoAckPanel = true).also { it.enqueue() }
+        connection.connect(); status("connected")
+        val id = UUID.randomUUID().toString()
+        val state = AtomicReference(dashboardPending(id, preview))
+        val consent = state.get().dashboardGeneration
+        val lock = checkNotNull(RemoteConnection::class.java.getDeclaredField("lock").apply { isAccessible = true }.get(connection))
+        val result = async(Dispatchers.IO + caller.asContextElement(true)) {
+            runCatching {
+                assertTrue("The original controller IO guard passed", state.get().panelMayDispatch(id, consent))
+                connection.request("panel_action", JSONObject().put("actionId", "fictional-action").put("preview", preview), id,
+                    dispatchAllowed = { state.get().panelMayDispatch(id, consent) })
+            }
+        }
+        try {
+            assertTrue("Request must pass the first transport lock", atClock.await(5, TimeUnit.SECONDS))
+            synchronized(lock) {
+                resumeClock.countDown()
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+                var blocked = false
+                while (System.nanoTime() < deadline) {
+                    val thread = dispatchThread.get()
+                    if (thread.state == Thread.State.BLOCKED &&
+                        thread.stackTrace.any { it.className.startsWith(RemoteConnection::class.java.name) }) {
+                        blocked = true
+                        break
+                    }
+                    Thread.yield()
+                }
+                assertTrue("Request must really wait for the final transport dispatch lock", blocked)
+                state.set(if (replacePending) state.get().let {
+                    it.copy(panel = it.panel.copy(pending = it.panel.pending!!.copy(id = UUID.randomUUID().toString())))
+                } else state.get().dashboardSetting(false))
+                if (enableAgain) state.set(state.get().dashboardSetting(true).let {
+                    it.copy(panel = it.panel.copy(fresh = true))
+                })
+            }
+        } finally { resumeClock.countDown() }
+        val outcome = withTimeout(3_000) { result.await() }
+        val failure = outcome.exceptionOrNull()
+        assertTrue("Retired consent must reject before encryption, not succeed: $outcome", failure is RemoteRequestFailure)
+        failure as RemoteRequestFailure
+        assertFalse(failure.uncertain)
+        assertTrue(failure.notDispatched)
+        assertTrue(relay.frames.isEmpty())
+        assertTrue(synchronized(peers) { peers.single().protectedRequests.isEmpty() })
+        assertTrue(statuses.isEmpty())
+        assertFalse(synchronized(peers) { peers.single().closed })
+        assertSuccessfulRead(relay)
+        assertEquals(3, server.requestCount)
+        assertEquals(1, synchronized(peers) { peers.size })
+    }
+
+    @Test fun dashboardOffAfterDispatchKeepsAcknowledgementAndSharedChannel() = runBlocking {
+        grant(); val relay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        val id = UUID.randomUUID().toString()
+        val state = AtomicReference(dashboardPending(id))
+        val consent = state.get().dashboardGeneration
+        val result = async {
+            assertTrue(state.get().panelMayDispatch(id, consent))
+            connection.request("panel_action", JSONObject().put("actionId", "fictional-action").put("preview", false), id,
+                dispatchAllowed = { state.get().panelMayDispatch(id, consent) })
+        }
+        withTimeout(3_000) { while (relay.frames.isEmpty()) delay(10) }
+        assertEquals(id, relay.frames.take().getString("id"))
+        state.set(state.get().dashboardSetting(false))
+        relay.send(JSONObject().put("id", id).put("status", 200).put("data",
+            JSONObject().put("ok", true).put("sent", true)))
+        val reply = withTimeout(3_000) { result.await() }
+        val completed = state.get().panel.complete(id, Snapshots.panelResult(reply))
+        assertEquals("Sent to Copilot", completed.message)
+        assertNull(completed.pending)
+        assertTrue(relay.frames.isEmpty())
+        assertEquals(1, synchronized(peers) { peers.single().protectedRequests.size })
+        assertSuccessfulRead(relay)
+        assertTrue(statuses.isEmpty())
+        assertFalse(synchronized(peers) { peers.single().closed })
+        assertEquals(3, server.requestCount)
+    }
+
     @Test fun workspaceFailureCanToggleUiLivenessWithoutReconnectingRelay() = runBlocking {
         grant()
         val relay = Relay().also { it.enqueue() }
@@ -643,6 +796,131 @@ class RemoteConnectionTest {
         relay.ack(oldID); delay(100)
         assertFalse(fresh.isCompleted)
         relay.ack(freshID); assertTrue(fresh.await().getBoolean("ok"))
+    }
+
+    @Test fun cancellationBeforeProtectionKeepsTheExistingChannelUsable() = runBlocking {
+        val caller = ThreadLocal<Boolean>()
+        val cancelAtClock = AtomicReference<(() -> Unit)?>(null)
+        connection.close()
+        connection = newConnection(clockWall = {
+            if (caller.get() == true) cancelAtClock.getAndSet(null)?.invoke()
+            System.currentTimeMillis()
+        })
+        grant(); val relay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        val cancelled = async(caller.asContextElement(true), start = CoroutineStart.LAZY) {
+            connection.request("state", JSONObject())
+        }
+        cancelAtClock.set { cancelled.cancel() }
+        cancelled.start(); cancelled.join()
+        assertTrue(cancelled.isCancelled)
+        assertTrue(synchronized(peers) { peers.single().protectedRequests.isEmpty() })
+        assertTrue(statuses.isEmpty())
+        assertSuccessfulRead(relay)
+        assertEquals(3, server.requestCount)
+        assertFalse(synchronized(peers) { peers.single().closed })
+    }
+
+    @Test fun cancellationAfterProtectionRecoversFreshChannelWithoutTerminalError() = runBlocking {
+        grant(); val old = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        grant(); val fresh = Relay().also { it.enqueue() }
+        val cancelled = async(start = CoroutineStart.LAZY) { runCatching { connection.request("workspace", JSONObject()) } }
+        synchronized(peers) { peers.single().afterProtect = { cancelled.cancel() } }
+        cancelled.start(); cancelled.join()
+        assertTrue(cancelled.isCancelled)
+        assertEquals("disconnected", statuses.poll(3, TimeUnit.SECONDS)?.state)
+        assertTrue(old.frames.isEmpty())
+        assertTrue(synchronized(peers) { peers.first().closed })
+        assertEquals(1, synchronized(peers) { peers.first().protectedRequests.size })
+        status("connected")
+        assertEquals(2, synchronized(peers) { peers.size })
+        assertTrue(fresh.frames.isEmpty())
+        assertSuccessfulRead(fresh)
+        assertEquals(6, server.requestCount)
+    }
+
+    @Test fun cancelledPollRetiresPendingMutationAsUncertainWithoutReplay() = runBlocking {
+        grant(); val old = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        val mutationID = UUID.randomUUID().toString()
+        val mutation = async { runCatching { connection.request("control", JSONObject(), mutationID) } }
+        val sent = withTimeout(3000) { while (old.frames.isEmpty()) delay(10); old.frames.take() }
+        assertEquals(mutationID, sent.getString("id"))
+        grant(); val fresh = Relay().also { it.enqueue() }
+        val cancelled = async(start = CoroutineStart.LAZY) { runCatching { connection.request("state", JSONObject()) } }
+        synchronized(peers) { peers.single().afterProtect = { cancelled.cancel() } }
+        cancelled.start(); cancelled.join()
+        val failure = mutation.await().exceptionOrNull() as RemoteRequestFailure
+        assertTrue(failure.uncertain)
+        assertFalse(failure.notDispatched)
+        assertEquals("disconnected", statuses.poll(3, TimeUnit.SECONDS)?.state)
+        status("connected")
+        assertTrue(fresh.frames.isEmpty())
+        assertSuccessfulRead(fresh)
+        assertFalse(synchronized(peers) {
+            peers.last().protectedRequests.any { it.getString("id") == mutationID }
+        })
+    }
+
+    @Test fun cancelledMutationAfterProtectionIsNotSentOrAutomaticallyReplayed() = runBlocking {
+        grant(); val old = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        grant(); val fresh = Relay().also { it.enqueue() }
+        val id = UUID.randomUUID().toString()
+        val outcome = AtomicReference<Throwable?>()
+        val cancelled = async(start = CoroutineStart.LAZY) {
+            runCatching { connection.request("reply", JSONObject(), id) }.also { outcome.set(it.exceptionOrNull()) }
+        }
+        synchronized(peers) { peers.single().afterProtect = { cancelled.cancel() } }
+        cancelled.start(); cancelled.join()
+        assertTrue(cancelled.isCancelled)
+        val failure = outcome.get()
+        assertTrue(failure is CancellationException || failure is RemoteRequestFailure && failure.uncertain && !failure.notDispatched)
+        assertEquals(id, synchronized(peers) { peers.first().protectedRequests.single().getString("id") })
+        assertTrue(old.frames.isEmpty())
+        assertEquals("disconnected", statuses.poll(3, TimeUnit.SECONDS)?.state)
+        status("connected")
+        assertTrue(fresh.frames.isEmpty())
+        assertTrue(synchronized(peers) { peers.last().protectedRequests.isEmpty() })
+        assertSuccessfulRead(fresh)
+    }
+
+    @Test fun ownerCloseCancelsPostProtectionRecoveryWithoutResurrection() = runBlocking {
+        grant(); val relay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        val cancelled = async(start = CoroutineStart.LAZY) { runCatching { connection.request("state", JSONObject()) } }
+        synchronized(peers) { peers.single().afterProtect = { cancelled.cancel() } }
+        cancelled.start(); cancelled.join()
+        assertEquals("disconnected", statuses.poll(3, TimeUnit.SECONDS)?.state)
+        connection.close()
+        connection.connect()
+        delay(1200)
+        assertEquals(3, server.requestCount)
+        assertEquals(1, synchronized(peers) { peers.size })
+        assertTrue(synchronized(peers) { peers.single().closed })
+        assertTrue(relay.frames.isEmpty())
+        assertFalse(statuses.any { it.state == "connecting" || it.state == "connected" })
+    }
+
+    @Test fun cancellationThrownByCryptoRemainsTerminalValidationFailure() = runBlocking {
+        grant(); val relay = Relay().also { it.enqueue() }
+        connection.connect(); status("connected")
+        synchronized(peers) { peers.single().afterProtect = { throw CancellationException("Synthetic crypto failure") } }
+        val failure = runCatching { connection.request("state", JSONObject()) }.exceptionOrNull()
+        assertTrue(failure is RemoteRequestFailure && failure.uncertain)
+        assertEquals("error", statuses.poll(3, TimeUnit.SECONDS)?.state)
+        delay(1200)
+        assertEquals(3, server.requestCount)
+        assertTrue(relay.frames.isEmpty())
+    }
+
+    private suspend fun assertSuccessfulRead(relay: Relay) = coroutineScope {
+        val result = async { connection.request("state", JSONObject()) }
+        val frame = withTimeout(3000) { while (relay.frames.isEmpty()) delay(10); relay.frames.take() }
+        assertEquals("state", frame.getJSONObject("payload").getString("path"))
+        relay.ack(frame.getString("id"))
+        assertTrue(result.await().getBoolean("ok"))
     }
 
     @Test fun closeCancelsHandshakeAndDoesNotCloseAccountService() = runBlocking {
@@ -906,6 +1184,65 @@ class RemoteConnectionTest {
         assertEquals(1, server.requestCount)
     }
 
+    @Test fun rememberedGrantUsesExactScopedEndpointAndNativeSignerWithoutDoublePrefix() {
+        connection.close()
+        val record = rememberedRelationship().copy(account = app.notify.android.controller.Account(
+            service.origin.toString().removeSuffix("/"), "synthetic-account-1"), macID = macID, deviceID = deviceID,
+            macPublicKey = app.notify.android.controller.encodeKey(pin))
+        val examples = rememberedExamples()
+        val original = RememberProposal.parse(examples.getJSONObject("enableFinish").getJSONObject("response"),
+            rememberedRelationship()).authorization
+        val authorization = original.copy(relationship = record, expiresAt = System.currentTimeMillis() + 60000)
+        val id = "A".repeat(43)
+        val expiry = System.currentTimeMillis() + 29000
+        fun challenge(kind: String, connection: Boolean = false): String {
+            val value = JSONObject(examples.getJSONObject("phoneGrantBegin").getJSONObject("response").getString("challenge"))
+                .put("purpose", "remember-$kind").put("operation", kind).put("origin", record.account.issuer)
+                .put("account", record.account.json()).put("macID", macID).put("deviceID", deviceID)
+                .put("macPublicKey", record.macPublicKey).put("authorizationExpiresAt", authorization.expiresAt)
+                .put("challengeExpiresAt", expiry)
+            if (connection) value.put("connectionID", id)
+            return value.toString()
+        }
+        var accepted: RememberAuthorization? = null
+        connection = RemoteConnection(service, macID, deviceID, pin, { statuses.add(it) },
+            { FixtureCrypto(null).also { peers.add(it) } }, { elapsed.get() }, System::currentTimeMillis,
+            remembered = authorization, authorized = { proof, _ -> accepted = proof })
+        val raw = challenge("grant")
+        server.enqueue(MockResponse().setBody(JSONObject().put("id", id).put("expiresAt", expiry).put("challenge", raw).toString()))
+        val result = lease(challenge("renew", true), expiry).put("scope", "remembered")
+            .put("generation", authorization.generation).put("authorizationExpiresAt", authorization.expiresAt)
+            .put("validForMs", 29000).put("push", JSONObject().put("enabled", false).put("registrationGeneration", JSONObject.NULL))
+        result.getJSONObject("renewal").put("id", id)
+        server.enqueue(MockResponse().setBody(result.toString()).addHeader("Set-Cookie",
+            "__Host-notify-relay=${"A".repeat(43)}; Path=/; Secure; HttpOnly; Max-Age=30"))
+        val relay = Relay().also { it.enqueue() }
+        connection.connect()
+        status("connected")
+        assertEquals(authorization, accepted)
+        assertEquals(raw, peers.last().signed.single())
+        assertEquals("/v1/remote/remember/grant/begin", server.takeRequest().path)
+        assertEquals("/v1/remote/remember/grant/finish", server.takeRequest().path)
+        assertNotNull(relay.socket)
+    }
+
+    @Test fun rememberedWrongKeyCannotInvokeSignerOrDispatchFinish() {
+        connection.close()
+        val record = rememberedRelationship().copy(account = app.notify.android.controller.Account(
+            service.origin.toString().removeSuffix("/"), "synthetic-account-1"), macID = macID, deviceID = deviceID,
+            macPublicKey = app.notify.android.controller.encodeKey(pin))
+        val authorization = RememberProposal.parse(rememberedExamples().getJSONObject("enableFinish").getJSONObject("response"),
+            rememberedRelationship()).authorization.copy(relationship = record)
+        connection = RemoteConnection(service, macID, deviceID, pin, { statuses.add(it) },
+            { FixtureCrypto(null).also { peers.add(it) } }, { elapsed.get() }, System::currentTimeMillis,
+            remembered = authorization)
+        server.enqueue(MockResponse().setBody(rememberedExamples().getJSONObject("phoneGrantBegin").getJSONObject("response").toString()))
+        connection.connect()
+        status("error")
+        assertTrue(peers.last().signed.isEmpty())
+        assertEquals(1, server.requestCount)
+    }
+
     private class FixtureCrypto(private val failure: String?) : RemoteCrypto {
         var closed = false
         var joinedPin: ByteArray? = null
@@ -913,6 +1250,7 @@ class RemoteConnectionTest {
         var afterProtect: (() -> Unit)? = null
         var decodedOverride: ByteArray? = null
         val signed = mutableListOf<String>()
+        val protectedRequests = LinkedBlockingQueue<JSONObject>()
         override fun keyPackage() = byteArrayOf(7)
         override fun signAuthorization(challenge: ByteArray): ByteArray {
             signed.add(challenge.toString(Charsets.UTF_8))
@@ -922,7 +1260,11 @@ class RemoteConnectionTest {
             check(failure != "pin") { "Pin mismatch" }
             joinedPin = pinnedKey.clone()
         }
-        override fun protect(plaintext: ByteArray): ByteArray = plaintext.also { afterProtect?.invoke() }
+        override fun protect(plaintext: ByteArray): ByteArray = plaintext.also {
+            val value = JSONObject(it.toString(Charsets.UTF_8))
+            if (value.has("payload")) protectedRequests.add(value)
+            afterProtect?.invoke()
+        }
         override fun unprotect(frame: ByteArray, expectedSender: ByteArray): ByteArray {
             this.expectedSender = expectedSender.clone()
             decodedOverride?.let { return it }

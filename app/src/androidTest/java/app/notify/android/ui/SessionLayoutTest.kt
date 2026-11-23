@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
@@ -30,8 +31,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.ViewModelProvider
 import app.notify.android.MainActivity
+import app.notify.android.NotifyApplication
 import app.notify.android.controller.*
 import app.notify.android.remote.RemoteStatus
 import app.notify.android.remote.RequestInbox
@@ -39,8 +40,177 @@ import app.notify.android.notifications.NotificationSettings
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import org.json.JSONObject
 
 class SessionLayoutTest : InstrumentationTestCase() {
+    private fun optionalPanel() = Snapshots.panel(JSONObject("""{"available":true,"panel":{"version":1,"title":"Orchard notebook",
+        "copilot":{"connected":true,"busy":false},"tabs":[
+        {"id":"notes","label":"Notes","sections":[{"title":"Notes to review","emphasis":"attention","items":[
+        {"id":"seed","title":"Plan the seed library","subtitle":"A fictional community project","actions":[{"id":"inspect-seed","label":"Review","style":"primary"}],
+        "log":{"entries":[{"at":"Today","text":"A neighbor suggested an exchange shelf."},{"text":"Waiting for a volunteer."}],"truncated":true}}]}],
+        "form":{"version":1,"actionId":"capture-note","title":"Add a note","submitLabel":"Review note","placeholder":"A short idea","minLength":1,"maxLength":300},
+        "track":{"version":1,"title":"Project stages","stages":[{"id":"idea","label":"Collect ideas","kind":"normal"},
+        {"id":"review","label":"Volunteer review","hint":"A person decides","kind":"gate"},{"id":"choose","label":"Choose next step","kind":"decision"}],
+        "placements":[{"itemId":"seed","stageId":"review"}]}},
+        {"id":"calendar","label":"Calendar","sections":[]},{"id":"people","label":"People","sections":[]},
+        {"id":"archive","label":"Archive","sections":[]}]}}""")).feed!!
+
+    fun testOptionalDashboardNativeFormCancelDraftTabsAndOff() {
+        for (enlarged in listOf(false, true)) fixture(enlarged, { base, _, _ ->
+            val account = Account("fictional", "owner")
+            val pairing = Relationship(account, "orchard-mac", "pin", "fixture-phone", "public", "Orchard", true)
+            var state by remember { mutableStateOf(base.copy(account = account, relationship = pairing,
+                dashboardEnabled = true, panel = PanelState(fresh = true, available = true, feed = optionalPanel()))) }
+            var settings by remember { mutableStateOf(false) }
+            val tab = state.panel.feed!!.tabs.first()
+            val key = state.panelDraftKey(tab.id, tab.form!!.actionId)!!
+            Column {
+                TextButton(onClick = { settings = !settings }) { Text(if (settings) "Back to dashboard" else "Dashboard settings") }
+                if (settings) CustomDashboardSetting(state, { state = state.dashboardSetting(it) }, {})
+                else PanelScreen(state, {}, { _, _, text -> state = state.copy(panel = state.panel.edit(key, text)) },
+                    {
+                        val submission = state.panel.submission(key)!!
+                        val confirm = Snapshots.panelPreview(PanelAction(key.actionId, "Review note"),
+                            JSONObject().put("ok", true).put("confirm", "Record this fictional idea only.")
+                                .put("confirmationToken", "F".repeat(43)), submission)
+                        state = state.copy(panel = state.panel.copy(confirm = confirm))
+                    },
+                    { state = state.copy(panel = state.panel.copy(confirm = null)) },
+                    {
+                        val confirm = state.panel.confirm!!
+                        assertEquals(confirm.submission!!.text, Snapshots.panelAction(confirm).getString("text"))
+                        state = state.copy(panel = state.panel.copy(pending = PanelPending("fixture", key.actionId, true,
+                            confirm.submission), confirm = null).complete("fixture", PanelResult(true, true, false, false, "")))
+                    }, {})
+            }
+        }, fontScale = if (enlarged) 2f else 1f, width = if (enlarged) 320 else 390) {
+            val raw = "  \"Café 🪴\" idea  "
+            scrollToText("Add a note")
+            enterDashboardText(raw)
+            scrollToText("Review note")
+            click("Review note")
+            bounds("Your exact text")
+            scrollToText(raw)
+            bounds(raw)
+            click("Cancel")
+            scrollToText("Calendar", forward = false)
+            click("Calendar")
+            bounds("Nothing here right now.")
+            click("Notes")
+            scrollToText("Add a note")
+            assertEquals(raw, editableNode().text.toString())
+            scrollToText("Review note")
+            click("Review note")
+            click("Send")
+            scrollToText("Add a note", forward = false)
+            assertTrue(editableNode().text.isNullOrEmpty())
+            enterDashboardText("Keep this unsent idea")
+            click("Dashboard settings")
+            click("Custom dashboard")
+            bounds("Off · optional")
+            click("Custom dashboard")
+            click("Back to dashboard")
+            scrollToText("Add a note")
+            assertEquals("Keep this unsent idea", editableNode().text.toString())
+        }
+    }
+
+    fun testOptionalDashboardNativeStagesDetailsAndPlainRecentLog() {
+        for (enlarged in listOf(false, true)) fixture(enlarged, { state, controller, _ ->
+            Dashboard(state.copy(dashboardEnabled = true,
+                panel = PanelState(available = true, feed = optionalPanel())), controller)
+        }, fontScale = if (enlarged) 2f else 1f, width = if (enlarged) 320 else 390) {
+            scrollToText("Plan the seed library")
+            click("Plan the seed library")
+            scrollToText("Recent activity")
+            bounds("Recent activity")
+            scrollToText("Waiting for a volunteer.")
+            scrollToText("Some recent activity was omitted. This is not a full transcript.")
+            scrollToText("Close details")
+            click("Close details")
+            scrollToText("Collect ideas")
+            scrollToText("Volunteer review")
+            scrollToText("Choose next step")
+        }
+    }
+
+    fun testCanonicalAttentionStripUsesNativeThemeAndLocalNavigation() {
+        for (enlarged in listOf(false, true)) fixture(enlarged, { _, _, _ ->
+            val account = Account("synthetic", "owner")
+            val pairing = Relationship(account, "mac", "pin", "phone", "public", "Phone", true)
+            val request = app.notify.android.remote.RemoteRequest("ticket", "orchard", "Orchard",
+                app.notify.android.remote.Prompt("first", "permission", "Review synthetic release"))
+            val projection = AttentionProjection("11111111-1111-4111-8111-111111111111", 1,
+                AttentionItem("orchard", "first", "Orchard", "Review synthetic release"), 2)
+            var state by remember { mutableStateOf(ControllerState(account = account, relationship = pairing,
+                foreground = true, status = RemoteStatus("connected", "Synthetic"))
+                .receiveRequests(RequestSnapshot(true, listOf(request), projection), 100)) }
+            Column {
+                PendingAttentionStrip(state, { state = state.openAttention() }, {})
+                if (state.decisionFocus > 0) Text("Exact local Decision: ${state.inbox.selectedTicket}")
+            }
+        }) {
+            bounds("Review synthetic release")
+            bounds("+2 OTHER waiting requests")
+            click("Review synthetic release")
+            bounds("Exact local Decision: ticket")
+        }
+    }
+
+    fun testCanonicalAttentionUnknownHasDiscoverableRestartRecovery() {
+        fixture(enlarged = true, content = { _, _, _ ->
+            val account = Account("synthetic", "owner")
+            val pairing = Relationship(account, "mac", "pin", "phone", "public", "Phone", true)
+            val current = AttentionItem("orchard", "first", "Orchard", "Review synthetic release")
+            val state = ControllerState(account = account, relationship = pairing, attentionOwner = pairing,
+                attention = AttentionState(current = current, handover = true))
+            PendingAttentionStrip(state, { error("Unknown projection cannot navigate") }, {})
+        }) {
+            bounds("Browse decisions")
+            bounds("Mac restarted · status unconfirmed. Select the current Mac request in Needs you.")
+        }
+    }
+
+    fun testDashboardTabsAndOfflineActions() {
+        val action = PanelAction("status:example", "Status")
+        val feed = PanelFeed("Example dashboard", null, true, false, listOf(
+            PanelTab("work", "Work", null, listOf(PanelSection("Needs attention", listOf(
+                PanelItem("example", "Example task", "Ready for review", actions = listOf(action)))))),
+            PanelTab("done", "Done", null, listOf(PanelSection("Finished", emptyList())))))
+        for (enlarged in listOf(false, true)) fixture(enlarged, { state, controller, _ ->
+            Dashboard(state.copy(dashboardEnabled = true, status = RemoteStatus("disconnected", "Not connected"),
+                panel = PanelState(available = true, feed = feed)), controller)
+        }) {
+            bounds("Example dashboard")
+            bounds("Example task")
+            var status: AccessibilityNodeInfo? = node("Status")
+            var disabled = false
+            while (status != null && status.packageName?.toString() == instrumentation.targetContext.packageName) {
+                disabled = disabled || !status.isEnabled
+                status = status.parent
+            }
+            assertTrue("Offline dashboard actions must be disabled", disabled)
+            click("Done")
+            bounds("Nothing here.")
+            click("Work")
+            bounds("Example task")
+        }
+    }
+
+    fun testDashboardShowsExactConfirmation() {
+        val action = PanelAction("status:example", "Status")
+        val prompt = "Report the status of the example task. Do not change files."
+        for (enlarged in listOf(false, true)) fixture(enlarged, { state, controller, _ ->
+            Dashboard(state.copy(dashboardEnabled = true, panel = PanelState(confirm =
+                PanelConfirm(action, "Confirm example status", prompt, "C".repeat(43)))), controller)
+        }) {
+            bounds("Confirm example status")
+            bounds(prompt)
+            bounds("Cancel")
+            bounds("Send")
+        }
+    }
+
     fun testNativeMarkdownKeepsCodeCopyExact() {
         val code = "  val exact = 1  \r\n\r\n"
         val source = "# Fixture heading\n\n**Bold** and *soft*\n\n```kotlin\r\n${code}```\r\n"
@@ -109,10 +279,18 @@ class SessionLayoutTest : InstrumentationTestCase() {
     }
 
     private fun click(text: String) {
-        var target = node(text)
-        while (!target.isClickable) target = checkNotNull(target.parent)
-        assertTrue(target.performAction(AccessibilityNodeInfo.ACTION_CLICK))
-        instrumentation.waitForIdleSync()
+        val deadline = SystemClock.uptimeMillis() + 5_000
+        while (SystemClock.uptimeMillis() < deadline) {
+            var target: AccessibilityNodeInfo? = node(text)
+            while (target != null && !target.isClickable) target = target.parent
+            if (target != null && target.refresh() && target.isVisibleToUser && target.isEnabled) {
+                assertTrue("Fixture click failed for '$text'", target.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+                instrumentation.waitForIdleSync()
+                return
+            }
+            SystemClock.sleep(50)
+        }
+        fail("No enabled clickable fixture control for '$text'")
     }
 
     fun testComposerRemainsEditableWhileDeliveryIsBlockedOrBusy() {
@@ -339,6 +517,8 @@ class SessionLayoutTest : InstrumentationTestCase() {
 
     private fun fixture(enlarged: Boolean = false,
         content: @Composable (ControllerState, ControllerViewModel, MainActivity) -> Unit,
+        fontScale: Float = if (enlarged) 1.3f else 1f,
+        width: Int = if (enlarged) 320 else 448,
         verify: () -> Unit,
     ) {
         assertEquals("Native fixtures must never run against the real Notify app",
@@ -360,14 +540,14 @@ class SessionLayoutTest : InstrumentationTestCase() {
                 inbox = RequestInbox().receive(0, true, emptyList(), now))
             instrumentation.runOnMainSync {
                 activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                val controller = ViewModelProvider(activity)[ControllerViewModel::class.java]
+                val controller = (activity.application as NotifyApplication).controller
                 activity.setContent {
                     CompositionLocalProvider(LocalDensity provides Density(
-                        LocalDensity.current.density, if (enlarged) 1.3f else 1f)) {
+                        LocalDensity.current.density, fontScale)) {
                         NotifyTheme(if (enlarged) PhoneAppearance.Dark else PhoneAppearance.Light) {
                             Surface(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
                                 Box(Modifier.fillMaxSize()) {
-                                    Box(Modifier.width(if (enlarged) 320.dp else 448.dp).fillMaxHeight()) {
+                                    Box(Modifier.width(width.dp).fillMaxHeight()) {
                                         content(state, controller, activity)
                                     }
                                 }
@@ -395,6 +575,47 @@ class SessionLayoutTest : InstrumentationTestCase() {
     }
 
     private fun bounds(text: String): Rect = node(text).let { node -> Rect().also(node::getBoundsInScreen) }
+
+    private fun visibleNodes(): List<AccessibilityNodeInfo> {
+        val result = mutableListOf<AccessibilityNodeInfo>()
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        instrumentation.uiAutomation.rootInActiveWindow?.let(queue::add)
+        while (queue.isNotEmpty()) {
+            val node = queue.removeFirst()
+            if (node.packageName?.toString() != instrumentation.targetContext.packageName) continue
+            if (node.isVisibleToUser) result += node
+            for (index in 0 until node.childCount) node.getChild(index)?.let(queue::add)
+        }
+        return result
+    }
+
+    private fun editableNode(): AccessibilityNodeInfo {
+        repeat(12) {
+            val nodes = visibleNodes()
+            nodes.firstOrNull { it.isEditable }?.let { return it }
+            nodes.firstOrNull { it.isScrollable }?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+            instrumentation.waitForIdleSync()
+        }
+        throw AssertionError("No visible dashboard text field")
+    }
+
+    private fun enterDashboardText(text: String) {
+        assertTrue(editableNode().performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, android.os.Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        }))
+        instrumentation.waitForIdleSync()
+    }
+
+    private fun scrollToText(text: String, forward: Boolean = true) {
+        repeat(40) {
+            val nodes = visibleNodes()
+            if (nodes.any { it.text?.toString() == text && !Rect().also(it::getBoundsInScreen).isEmpty }) return
+            val scroll = nodes.firstOrNull { it.isScrollable && !it.isEditable } ?: return@repeat
+            scroll.performAction(if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+            instrumentation.waitForIdleSync()
+        }
+        bounds(text)
+    }
 
     private fun node(text: String): AccessibilityNodeInfo {
         val deadline = SystemClock.uptimeMillis() + 5_000

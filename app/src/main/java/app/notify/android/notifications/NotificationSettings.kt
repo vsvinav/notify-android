@@ -17,17 +17,37 @@ import java.security.MessageDigest
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import app.notify.android.controller.Relationship
+import app.notify.android.remote.PushMetadata
+import org.json.JSONObject
 
 class NotificationSettings(context: Context) {
     private val context = context.applicationContext
     internal val prefs = context.getSharedPreferences("notify-notifications-v1", Context.MODE_PRIVATE)
     private val manager = context.getSystemService(NotificationManager::class.java)
+    private fun rememberedState() = context.getSharedPreferences("notify-remembered-v1", Context.MODE_PRIVATE).getString("state", null)
+    private fun authorityOperation(): Long = try {
+        rememberedState()?.let { JSONObject(it).getLong("operation") } ?: 0
+    } catch (_: Exception) { -1 }
+    fun routing(record: Relationship): PushMetadata? {
+        if (prefs.getString("routingOwner", null) != record.toString()) return null
+        return prefs.getString("routing", null)?.let { PushMetadata.parse(JSONObject(it)) }
+    }
+    fun routing(record: Relationship, metadata: PushMetadata) = save(prefs.edit()
+        .putString("routingOwner", record.toString()).putString("routing", JSONObject().put("enabled", metadata.enabled)
+            .put("registrationGeneration", metadata.registrationGeneration ?: JSONObject.NULL).toString())
+        .putBoolean("routePossible", metadata.enabled))
+    fun advanceAuthority(previous: Long) {
+        if (!alertsBlocked && prefs.getBoolean("consent", false) && prefs.getLong("authorityOperation", 0) == previous)
+            save(prefs.edit().putLong("authorityOperation", authorityOperation()))
+    }
     val channelID: String
         get() = if (prefs.getBoolean("longerVibration", manager.getNotificationChannel(CHANNEL) == null))
             LONGER_CHANNEL else CHANNEL
 
     fun state(): NotificationState = NotificationState(
-        consent = prefs.getBoolean("consent", false),
+        consent = prefs.getBoolean("consent", false) && notificationAuthorityCurrent(rememberedState(),
+            prefs.getLong("authorityOperation", 0), alertsBlocked, System.currentTimeMillis()),
         permission = permissionGranted() && manager.areNotificationsEnabled(),
         channel = (manager.getNotificationChannel(channelID)?.importance ?: NotificationManager.IMPORTANCE_NONE) >
             NotificationManager.IMPORTANCE_NONE,
@@ -93,7 +113,8 @@ class NotificationSettings(context: Context) {
         check(permissionGranted() && state().permission && state().channel) {
             "Android notifications are blocked. Allow this channel in system settings first."
         }
-        save(prefs.edit().putBoolean("consent", true).putString("registered", ""))
+        alertsBlocked = false
+        save(prefs.edit().putBoolean("consent", true).putLong("authorityOperation", authorityOperation()).putString("registered", ""))
         val messaging = FirebaseMessaging.getInstance()
         messaging.isAutoInitEnabled = true
         val token = messaging.token.awaitPrivate()
@@ -115,9 +136,9 @@ class NotificationSettings(context: Context) {
         save(prefs.edit().putString("registered", digest(token)))
     }
     fun disableLocally() {
+        synchronized(deliveryLock) { alertsBlocked = true; manager.cancel(NOTIFICATION_ID) }
         val hadConsent = prefs.getBoolean("consent", false)
         save(prefs.edit().putBoolean("consent", false).putString("registered", ""))
-        manager.cancel(NOTIFICATION_ID)
         if (hadConsent || prefs.getBoolean("routePossible", false)) {
             val messaging = FirebaseMessaging.getInstance()
             messaging.isAutoInitEnabled = false
@@ -142,6 +163,8 @@ class NotificationSettings(context: Context) {
         const val NOTIFICATION_ID = 1
         const val OPEN_ATTENTION = "app.notify.android.OPEN_ATTENTION"
         @Volatile var foreground = false
+        @Volatile var alertsBlocked = false
+        internal val deliveryLock = Any()
     }
 }
 

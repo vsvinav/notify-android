@@ -31,6 +31,7 @@ class HttpFailure(val status: Int, message: String) : IOException(message)
 
 class ServiceClient(val origin: HttpUrl, configuration: OkHttpClient = OkHttpClient()) : Closeable {
     private val cookies = SessionCookies(origin)
+    internal val accountExpiresAt get() = cookies.accountExpiresAt()
     private val http = configuration.newBuilder()
         .dispatcher(Dispatcher()).connectionPool(ConnectionPool()).cache(null)
         .cookieJar(cookies).followRedirects(false).followSslRedirects(false)
@@ -45,9 +46,9 @@ class ServiceClient(val origin: HttpUrl, configuration: OkHttpClient = OkHttpCli
     suspend fun post(path: String, data: JSONObject): JSONObject = post(path, data) {}
 
     // Capture the cookie from this exact response, not a shared jar that a cancelled grant could overwrite.
-    internal suspend fun finishRelayGrant(data: JSONObject): Pair<JSONObject, Cookie> {
+    internal suspend fun finishRelayGrant(data: JSONObject, remembered: Boolean = false): Pair<JSONObject, Cookie> {
         var cookie: Cookie? = null
-        val value = post("/v1/remote/grant/finish", data) { response ->
+        val value = post(if (remembered) "/v1/remote/remember/grant/finish" else "/v1/remote/grant/finish", data) { response ->
             val found = Cookie.parseAll(response.request.url, response.headers).filter { it.name == "__Host-notify-relay" }
             cookie = found.singleOrNull()?.takeIf { validRelayCookie(it) }
         }
@@ -154,4 +155,5 @@ private class SessionCookies(private val origin: HttpUrl) : CookieJar {
     }
 
     @Synchronized fun clear() = values.clear()
+    @Synchronized fun accountExpiresAt(): Long? = values["__Host-notify-account"]?.expiresAt
 }

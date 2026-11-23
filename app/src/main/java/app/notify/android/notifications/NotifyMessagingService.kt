@@ -43,8 +43,10 @@ class NotifyMessagingService : FirebaseMessagingService() {
             .setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(public)
             .setCategory(Notification.CATEGORY_REMINDER).setAutoCancel(true).setTimeoutAfter(120000).build()
         try {
-            if (settings.state().enabled)
-                getSystemService(NotificationManager::class.java).notify(NotificationSettings.NOTIFICATION_ID, notification)
+            synchronized(NotificationSettings.deliveryLock) {
+                if (settings.state().enabled)
+                    getSystemService(NotificationManager::class.java).notify(NotificationSettings.NOTIFICATION_ID, notification)
+            }
         } catch (_: SecurityException) {
             Log.w("NotifyAlerts", "Notification permission changed before the alert could be posted.")
         }
