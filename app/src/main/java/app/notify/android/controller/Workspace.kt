@@ -73,6 +73,8 @@ data class ControlCommand(val id: String, val sessionID: String, val ticket: Str
 data class ControlDelivery(val commandID: String, val status: String, val blocked: Boolean, val receiptID: String? = null,
     val policyRevision: Long? = null)
 data class SessionActionDelivery(val command: ControlCommand, val status: String, val blocked: Boolean)
+private const val WAITING_ACK = "Waiting for Mac acknowledgment…"
+private const val UNKNOWN_DELIVERY = "Delivery unknown. Check this exact target on Mac; nothing will be resent."
 data class WorkspaceState(
     val snapshot: WorkspaceSnapshot? = null, val sessionID: String? = null, val agentID: String = "",
     val receivedAt: Long? = null, val drafts: Map<DraftTarget, MessageDraft> = emptyMap(),
@@ -227,7 +229,7 @@ data class WorkspaceState(
         }
     }
     fun sending(command: ControlCommand): WorkspaceState {
-        val pending = ControlDelivery(command.id, "Waiting for Mac acknowledgment…", true,
+        val pending = ControlDelivery(command.id, WAITING_ACK, true,
             policyRevision = if (command.isPolicy) session?.dangerousAutoYes?.revision else null)
         return if (command.isSessionAction) copy(sessionDeliveries = sessionDeliveries +
             (command.sessionActionKey to SessionActionDelivery(command, pending.status, true)))
@@ -235,8 +237,18 @@ data class WorkspaceState(
             else if (command.isPolicy) copy(policyDeliveries = policyDeliveries + (command.target to pending))
             else copy(deliveries = deliveries + (command.target to pending))
     }
+    fun retirePending() = copy(
+        deliveries = deliveries.mapValues { (_, delivery) ->
+            if (delivery.status == WAITING_ACK) delivery.copy(status = UNKNOWN_DELIVERY) else delivery },
+        policyDeliveries = policyDeliveries.mapValues { (_, delivery) ->
+            if (delivery.status == WAITING_ACK) delivery.copy(status = UNKNOWN_DELIVERY) else delivery },
+        managementDeliveries = managementDeliveries.mapValues { (_, delivery) ->
+            if (delivery.status == WAITING_ACK) delivery.copy(status = UNKNOWN_DELIVERY) else delivery },
+        sessionDeliveries = sessionDeliveries.mapValues { (_, delivery) ->
+            if (delivery.status == WAITING_ACK) delivery.copy(status = UNKNOWN_DELIVERY) else delivery },
+    )
     fun uncertain(command: ControlCommand): WorkspaceState {
-        val unknown = ControlDelivery(command.id, "Delivery unknown. Check this exact target on Mac; nothing will be resent.", true)
+        val unknown = ControlDelivery(command.id, UNKNOWN_DELIVERY, true)
         return if (command.isSessionAction) {
             if (sessionDeliveries[command.sessionActionKey]?.command?.id != command.id) this
             else copy(sessionDeliveries = sessionDeliveries + (command.sessionActionKey to SessionActionDelivery(command, unknown.status, true)))
@@ -246,7 +258,10 @@ data class WorkspaceState(
         } else if (command.isPolicy) {
             if (policyDeliveries[command.target]?.commandID != command.id) this
             else copy(policyDeliveries = policyDeliveries + (command.target to unknown))
-        } else copy(deliveries = deliveries + (command.target to unknown))
+        } else {
+            if (deliveries[command.target]?.commandID != command.id) this
+            else copy(deliveries = deliveries + (command.target to unknown))
+        }
     }
     fun rejectPolicyBeforeDispatch(command: ControlCommand, message: String): WorkspaceState {
         require(command.isPolicy && command.enabled == false)

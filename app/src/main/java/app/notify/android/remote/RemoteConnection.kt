@@ -3,6 +3,7 @@ package app.notify.android.remote
 import android.os.SystemClock
 import app.notify.android.crypto.DeviceIdentity
 import app.notify.android.crypto.NativeChannel
+import app.notify.android.controller.ControllerConnection
 import java.io.Closeable
 import java.io.IOException
 import java.net.ProtocolException
@@ -38,6 +39,13 @@ import org.json.JSONTokener
 
 data class RemoteStatus(val state: String, val message: String)
 
+// Mutations get longer so a slow Mac acknowledgement is not reported as lost.
+internal fun requestTimeout(path: String): Long? = when (path) {
+    "state", "workspace", "panel" -> 12_000L
+    "reply", "control", "panel_action" -> 25_000L
+    else -> null
+}
+
 class RemoteRequestFailure(message: String, val uncertain: Boolean, val status: Int? = null,
     val notDispatched: Boolean = false) : IOException(message)
 
@@ -59,10 +67,16 @@ class RemoteConnection internal constructor(
     private val elapsed: () -> Long,
     private val wall: () -> Long,
     private val trace: ConnectionTrace? = null,
-) : Closeable {
+    private val remembered: RememberAuthorization? = null,
+    private val authorityCurrent: () -> Boolean = { true },
+    private val authorized: (RememberAuthorization, PushMetadata) -> Unit = { _, _ -> },
+) : ControllerConnection {
     constructor(
         service: ServiceClient, identity: DeviceIdentity, macID: String, deviceID: String,
-        pinnedMacKey: ByteArray, trace: ConnectionTrace? = null, onStatus: (RemoteStatus) -> Unit,
+        pinnedMacKey: ByteArray, trace: ConnectionTrace? = null,
+        remembered: RememberAuthorization? = null, authorityCurrent: () -> Boolean = { true },
+        authorized: (RememberAuthorization, PushMetadata) -> Unit = { _, _ -> },
+        onStatus: (RemoteStatus) -> Unit,
     ) : this(service, macID, deviceID, pinnedMacKey, onStatus, {
         val channel = NativeChannel.open(identity, "phone")
         object : RemoteCrypto {
@@ -74,7 +88,7 @@ class RemoteConnection internal constructor(
             override fun unprotect(frame: ByteArray, expectedSender: ByteArray) = channel.unprotect(frame, expectedSender)
             override fun close() = channel.close()
         }
-    }, SystemClock::elapsedRealtime, System::currentTimeMillis, trace)
+    }, SystemClock::elapsedRealtime, System::currentTimeMillis, trace, remembered, authorityCurrent, authorized)
 
     private val pin = pinnedMacKey.clone()
     private val lock = Any()
@@ -88,6 +102,11 @@ class RemoteConnection internal constructor(
     init {
         require(UUID_PATTERN.matches(macID) && UUID_PATTERN.matches(deviceID)) { "Invalid paired device identifier." }
         require(pin.size == 65 && pin[0] == 4.toByte()) { "A complete pinned Mac P256 public key is required." }
+        remembered?.let {
+            require(it.relationship.macID == macID && it.relationship.deviceID == deviceID &&
+                app.notify.android.controller.decodeKey(it.relationship.macPublicKey).contentEquals(pin) &&
+                it.relationship.account.issuer == service.origin.toString().removeSuffix("/"))
+        }
     }
 
     private class Attempt(val generation: Long, parent: Job?, val traceAttempt: Int) {
@@ -106,7 +125,8 @@ class RemoteConnection internal constructor(
         val offCalls = mutableMapOf<String, OffCall>()
     }
 
-    private data class Lease(val expiresAt: Long, val deadline: Long, val id: String, val challenge: String, val approved: Boolean)
+    private data class Lease(val expiresAt: Long, val deadline: Long, val id: String, val challenge: String,
+        val approved: Boolean, val serverExpiry: Long)
     private data class PendingCall(
         val result: CompletableDeferred<JSONObject>,
         val deadline: Long,
@@ -121,15 +141,17 @@ class RemoteConnection internal constructor(
         data class Failed(val error: Throwable, val httpCode: Int? = null, val wsCode: Int? = null) : Event
     }
 
-    fun connect() = synchronized(lock) {
+    override fun connect() = synchronized(lock) {
         if (!closed) {
             attempts = 0
             start()
         }
     }
 
-    private fun current(a: Attempt) = !closed && active === a && generation == a.generation
-    private fun live(a: Attempt): Boolean = a.lease?.let { wall() < it.expiresAt && elapsed() < it.deadline } == true
+    private fun current(a: Attempt) = !closed && active === a && generation == a.generation && authorityCurrent()
+    private fun live(a: Attempt): Boolean = a.lease?.let {
+        wall() < it.expiresAt && elapsed() < it.deadline && (remembered == null || wall() < remembered.expiresAt)
+    } == true
 
     private fun start() {
         dispose()
@@ -143,20 +165,36 @@ class RemoteConnection internal constructor(
                     a.peer = crypto { openCrypto() }
                 }
                 note(a, TraceEvent.GRANT_BEGIN)
-                val grant = service.post("/v1/remote/grant/begin",
-                    JSONObject().put("role", "phone").put("macID", macID).put("deviceID", deviceID))
+                val proofStarted = elapsed()
+                val grant = service.post(if (remembered == null) "/v1/remote/grant/begin" else "/v1/remote/remember/grant/begin",
+                    JSONObject().put("macID", macID).put("deviceID", deviceID).apply {
+                        if (remembered == null) put("role", "phone") else put("generation", remembered.generation)
+                    })
                 val signature = synchronized(lock) {
                     if (!current(a)) return@launch
                     val id = grant.opt("id") as? String
                     val challenge = grant.opt("challenge") as? String
                     requireProtocol(id != null && GRANT_PATTERN.matches(id) && validChallenge(challenge), "Invalid channel authorization challenge.")
+                    remembered?.let {
+                        exact(grant, setOf("id", "challenge", "expiresAt"))
+                        requireProtocol(elapsed() - proofStarted in 0 until 30_000L, "Remembered proof expired.")
+                        RememberProof.validate(challenge!!, it, "grant", JSONObject().put("role", "phone"),
+                            time(grant.opt("expiresAt")))
+                    }
                     sign(a, challenge!!)
                 }
+                synchronized(lock) {
+                    if (!current(a)) return@launch
+                    if (remembered != null) requireProtocol(elapsed() - proofStarted in 0 until 30_000L, "Remembered proof expired.")
+                }
                 val started = LeaseStart(wall(), elapsed())
-                val (result, cookie) = service.finishRelayGrant(JSONObject().put("id", grant.getString("id")).put("signature", signature))
+                val (result, cookie) = service.finishRelayGrant(JSONObject().put("id", grant.getString("id")).put("signature", signature),
+                    remembered = remembered != null)
                 synchronized(lock) {
                     if (!current(a)) return@launch
                     applyLease(a, validateLease(a, result, grant.getString("id"), started))
+                    remembered?.let { authorized(it, PushMetadata.parse(result.getJSONObject("push"))) }
+                    if (!current(a)) return@launch
                     note(a, TraceEvent.GRANT_FINISHED)
                     a.stage = "greeting"
                     requireLive(a)
@@ -296,25 +334,29 @@ class RemoteConnection internal constructor(
         }
     }
 
-    suspend fun request(path: String, data: JSONObject, id: String = UUID.randomUUID().toString()): JSONObject {
+    override suspend fun request(path: String, data: JSONObject, id: String,
+        dispatchAllowed: (() -> Boolean)?): JSONObject {
         // Fence before dispatching to IO: a queued caller must not migrate to a newly connected channel.
         val expected = synchronized(lock) {
             active?.takeIf { it.stage == "ready" }
                 ?: throw RemoteRequestFailure("An approved, connected Mac is required. No actions are queued.", false)
         }
         return withContext(Dispatchers.IO) {
-            require(path in setOf("state", "reply", "workspace", "control") && UUID_PATTERN.matches(id)) { "Unsupported Mac request or invalid request ID." }
+            val timeout = requestTimeout(path)
+            require(timeout != null && UUID_PATTERN.matches(id)) { "Unsupported Mac request or invalid request ID." }
             val payload = JSONObject().put("path", path).put("data", data)
             require(payload.toString().toByteArray().size <= 131_072) { "The Mac request is too large." }
             val key = id.lowercase()
             val off = policyOff(path, data, id)
             require(!OFF_ID.matches(id) || off) { "Off IDs cannot identify other requests." }
             val offSessionID = if (off) data.getString("sessionID") else null
-            val timeout = if (path == "reply" || path == "control") 25_000L else 12_000L
             val call = PendingCall(CompletableDeferred(), elapsed() + timeout, wall() + timeout, offSessionID)
             val context = currentCoroutineContext()
             val a = synchronized(lock) {
                 context.ensureActive()
+                // Recheck local authority after lock contention, before ledger changes or MLS protection.
+                if (dispatchAllowed?.invoke() == false)
+                    throw RemoteRequestFailure("Request was cancelled before dispatch. Nothing was sent.", false, notDispatched = true)
                 val a = expected
                 if (!current(a)) throw uncertainty()
                 require(!a.usedIDs.contains(key)) { "Request ID was already used. Nothing was resent." }
@@ -341,6 +383,10 @@ class RemoteConnection internal constructor(
                     send(a, bytes)
                     if (path == "state" || path == "workspace")
                         note(a, if (path == "state") TraceEvent.STATE_SENT else TraceEvent.WORKSPACE_SENT)
+                } catch (cancelled: CancellationException) {
+                    // Caller cancellation after protect may skip an MLS generation; retire it, never replay the request.
+                    fail(a, IOException("Request cancelled after encryption. A fresh channel is required; no actions were retried.", cancelled))
+                    throw cancelled
                 } catch (error: Exception) {
                     fail(a, error)
                     throw uncertainty()
@@ -378,6 +424,8 @@ class RemoteConnection internal constructor(
                 val input = synchronized(lock) {
                     if (!current(a)) return
                     requireLive(a)
+                    remembered?.let { RememberProof.validate(previous.challenge, it, "renew",
+                        JSONObject().put("role", "phone").put("connectionID", previous.id), previous.serverExpiry) }
                     val signature = sign(a, previous.challenge)
                     requireLive(a)
                     JSONObject().put("id", previous.id).put("signature", signature)
@@ -422,14 +470,28 @@ class RemoteConnection internal constructor(
             GRANT_PATTERN.matches(id) && renewal?.opt("id") == id && validChallenge(challenge) &&
             challenge != previous?.challenge, "Channel authorization does not match this phone or has expired.")
         val timing = leaseTiming(value, started, LeaseStart(wall(), elapsed()))
-        return Lease(timing.expiresAt, timing.deadline, id, challenge!!, approved!!)
+        val serverExpiry = time(value.opt("expiresAt"))
+        if (remembered == null) requireProtocol(!value.has("scope") || value.opt("scope") == "account", "Unexpected authorization scope.")
+        else {
+            exact(value, setOf("expiresAt", "validForMs", "role", "scope", "macID", "deviceID", "approved",
+                "renewal", "generation", "authorizationExpiresAt", "push"))
+            exact(renewal!!, setOf("id", "challenge"))
+            requireProtocol(value.opt("scope") == "remembered" && value.opt("generation") == remembered.generation &&
+                time(value.opt("authorizationExpiresAt")) == remembered.expiresAt && serverExpiry <= remembered.expiresAt &&
+                value.has("validForMs") && approved == true, "Remembered lease context changed.")
+            RememberProof.validate(challenge!!, remembered, "renew",
+                JSONObject().put("role", "phone").put("connectionID", id), serverExpiry)
+            PushMetadata.parse(value.getJSONObject("push"))
+        }
+        return Lease(timing.expiresAt, timing.deadline, id, challenge!!, approved!!, serverExpiry)
     }
 
     private fun applyLease(a: Attempt, lease: Lease) {
         a.lease = lease
         a.expiry?.cancel()
         a.expiry = a.scope.launch {
-            delay(minOf(lease.expiresAt - wall(), lease.deadline - elapsed()).coerceAtLeast(0))
+            delay(minOf(lease.expiresAt - wall(), lease.deadline - elapsed(),
+                remembered?.let { it.expiresAt - wall() } ?: Long.MAX_VALUE).coerceAtLeast(0))
             synchronized(lock) {
                 if (current(a) && a.lease === lease) {
                     note(a, TraceEvent.LEASE_EXPIRED, TraceCategory.TIMEOUT)

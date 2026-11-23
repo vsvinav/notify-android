@@ -3,6 +3,7 @@ package app.notify.android.remote
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -91,5 +92,37 @@ class ServiceClientTest {
                 runBlocking { client.post("/v1/account/session", JSONObject()) }
             }
         }
+    }
+
+    @Test fun rememberedFinishCapturesOnlyItsOwnRelayCookie() = runBlocking {
+        val relay = "A".repeat(43)
+        server.enqueue(MockResponse().setBody("{}").addHeader("Set-Cookie",
+            "__Host-notify-relay=$relay; Path=/; Secure; HttpOnly; Max-Age=30"))
+        val (_, cookie) = client.finishRelayGrant(JSONObject(), remembered = true)
+        assertEquals(relay, cookie.value)
+        assertEquals("/v1/remote/remember/grant/finish", server.takeRequest().path)
+        server.enqueue(MockResponse().setBody("{}"))
+        assertThrows(IOException::class.java) { runBlocking { client.finishRelayGrant(JSONObject(), remembered = true) } }
+        Unit
+    }
+    @Test fun retiredLogoutCannotOverwriteNewLoginCookies() = runBlocking {
+        val trust = HandshakeCertificates.Builder().addTrustedCertificate(certificate.certificate).build()
+        val fresh = ServiceClient(server.url("/"), OkHttpClient.Builder()
+            .sslSocketFactory(trust.sslSocketFactory(), trust.trustManager).build())
+        try {
+            server.enqueue(MockResponse().setBody("{}").setHeadersDelay(300, TimeUnit.MILLISECONDS)
+                .addHeader("Set-Cookie", "__Host-notify-account=; Path=/; Secure; HttpOnly; Max-Age=0"))
+            val logout = async { client.post("/v1/account/logout", JSONObject()) }
+            kotlinx.coroutines.delay(100)
+            server.enqueue(MockResponse().setBody("{}").addHeader("Set-Cookie",
+                "__Host-notify-account=new-session; Path=/; Secure; HttpOnly"))
+            fresh.post("/v1/account/login/verify", JSONObject())
+            logout.await()
+            client.close()
+            server.enqueue(MockResponse().setBody("{}"))
+            fresh.post("/v1/account/session", JSONObject())
+            server.takeRequest(); server.takeRequest()
+            assertEquals("__Host-notify-account=new-session", server.takeRequest().getHeader("Cookie"))
+        } finally { fresh.close() }
     }
 }

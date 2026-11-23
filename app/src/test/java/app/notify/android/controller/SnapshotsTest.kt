@@ -4,6 +4,7 @@ import app.notify.android.remote.AnswerDraft
 import app.notify.android.remote.RequestInbox
 import app.notify.android.remote.ReplyDecision
 import app.notify.android.remote.RemoteStatus
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -211,5 +212,104 @@ class SnapshotsTest {
     @Test fun workspaceDetailForAnotherTicketNeverBecomesSelectedConversation() {
         val snapshot = Snapshots.workspace(JSONObject("""{"connected":true,"sessions":[{"id":"s","name":"Build","project":"Notify","agent":"copilot","state":"working","connected":true,"ticket":"current","capabilities":{"steering":true,"subagentChat":true,"subagentStop":true}}],"detail":{"sessionID":"s","ticket":"old","team":null,"activity":[],"controls":[],"truncated":false}}"""))
         assertNull(WorkspaceState(snapshot, "s", receivedAt = 100).detail)
+    }
+    private fun panelFeed() = JSONObject("""{"available":true,"panel":{"version":1,"title":"Paragon Autopilot","updatedAt":"2026-11-18T18:40:00.000Z",
+        "copilot":{"connected":true,"busy":true},"tabs":[{"id":"tunnel","label":"Tunnel","badge":2,"sections":[{"title":"Needs you","items":[
+        {"id":"t-APA-806","title":"APA-806 · Write chat title","subtitle":"Parked","tone":"warn","url":"https://example.atlassian.net/browse/APA-806",
+         "actions":[{"id":"approve:APA-806:main","label":"Approve","style":"primary"},{"id":"status:APA-806","label":"Status"}]}]}]}]}}""")
+    @Test fun panelFeedParsesKnownFields() {
+        val reply = Snapshots.panel(panelFeed())
+        assertTrue(reply.available)
+        val feed = reply.feed!!
+        assertEquals("Paragon Autopilot", feed.title)
+        assertEquals(java.time.Instant.parse("2026-11-18T18:40:00Z").toEpochMilli(), feed.updatedAt)
+        assertTrue(feed.connected && feed.busy)
+        val item = feed.tabs.single().sections.single().items.single()
+        assertEquals(PanelTone.Warn, item.tone)
+        assertEquals("https://example.atlassian.net/browse/APA-806", item.url)
+        assertEquals(listOf(PanelAction("approve:APA-806:main", "Approve", PanelActionStyle.Primary),
+            PanelAction("status:APA-806", "Status", PanelActionStyle.Default)), item.actions)
+        assertFalse(Snapshots.panel(JSONObject("""{"available":false,"reason":"Provider offline"}""")).available)
+        assertEquals("Provider offline", Snapshots.panel(JSONObject("""{"available":false,"reason":"Provider offline"}""")).reason)
+    }
+    @Test fun panelDropsInvalidEntriesAndEnforcesLimitsWithoutThrowing() {
+        val wire = panelFeed()
+        val panel = wire.getJSONObject("panel")
+        val tabs = panel.getJSONArray("tabs")
+        val items = tabs.getJSONObject(0).getJSONArray("sections").getJSONObject(0).getJSONArray("items")
+        val good = items.getJSONObject(0)
+        good.put("tone", "purple").put("url", "http://insecure.example").put("subtitle", "s".repeat(281))
+        good.getJSONArray("actions").put(JSONObject().put("id", "bad id!").put("label", "Bad"))
+            .put(JSONObject().put("id", "ok:1").put("label", "x".repeat(25)))
+            .put(JSONObject().put("id", "ok:2").put("label", "Two").put("style", "danger"))
+            .put(JSONObject().put("id", "ok:3").put("label", "Three"))
+        items.put(JSONObject().put("id", "long").put("title", "t".repeat(141)))
+        items.put(JSONObject().put("title", "missing id"))
+        items.put("not an object")
+        repeat(70) { items.put(JSONObject().put("id", "i$it").put("title", "Item $it")) }
+        tabs.put(JSONObject().put("id", "Bad").put("label", "Upper").put("sections", JSONArray()))
+        tabs.getJSONObject(0).put("badge", 1000)
+        repeat(10) { tabs.put(JSONObject().put("id", "t$it").put("label", "T$it").put("sections", JSONArray())) }
+        val feed = Snapshots.panel(wire).feed!!
+        assertEquals(5, feed.tabs.size)
+        assertFalse(feed.tabs.any { it.id == "Bad" })
+        assertNull(feed.tabs[0].badge)
+        val parsed = feed.tabs[0].sections.single().items
+        assertEquals(60 - 3, parsed.size)
+        val first = parsed.first()
+        assertEquals(PanelTone.Idle, first.tone)
+        assertNull(first.url)
+        assertNull(first.subtitle)
+        assertEquals(listOf("approve:APA-806:main", "status:APA-806"), first.actions.map { it.id })
+        for (bad in listOf("""{"available":true}""", """{"available":true,"panel":[]}""", """{"available":"yes"}""",
+            """{"available":true,"panel":{"tabs":"nope","copilot":7}}""")) {
+            val reply = Snapshots.panel(JSONObject(bad))
+            if (reply.available) assertEquals(emptyList<PanelTab>(), reply.feed!!.tabs) else assertTrue(reply.reason.isNotBlank())
+        }
+        panel.put("padding", "x".repeat(262_145))
+        assertFalse(Snapshots.panel(wire).available)
+    }
+    @Test fun panelActionRepliesKeepPromptVerbatimAndReportDemo() {
+        val action = PanelAction("approve:APA-806:main", "Approve")
+        val confirm = Snapshots.panelPreview(action, JSONObject().put("ok", true).put("confirm", "  Approve APA-806\n(main) ")
+            .put("label", "Approve APA-806").put("confirmationToken", "P".repeat(43)))!!
+        assertEquals("  Approve APA-806\n(main) ", confirm.prompt)
+        assertEquals("Approve APA-806", confirm.label)
+        assertEquals("P".repeat(43), confirm.confirmationToken)
+        val send = Snapshots.panelAction(confirm)
+        assertEquals(setOf("actionId", "preview", "confirmationToken"), send.keySet())
+        assertEquals(action.id, send.getString("actionId"))
+        assertFalse(send.getBoolean("preview"))
+        assertEquals(confirm.confirmationToken, send.getString("confirmationToken"))
+        assertNull(Snapshots.panelPreview(action, JSONObject().put("ok", true).put("demo", true)))
+        assertNull(Snapshots.panelPreview(action, JSONObject().put("ok", true).put("demo", true).put("confirm", "demo")))
+        assertThrows(IllegalArgumentException::class.java) { Snapshots.panelPreview(action, JSONObject().put("ok", true)) }
+        assertThrows(IllegalArgumentException::class.java) {
+            Snapshots.panelPreview(action, JSONObject().put("ok", true).put("confirm", "Unbound prompt"))
+        }
+        assertThrows(IllegalArgumentException::class.java) { Snapshots.panelPreview(action, JSONObject().put("ok", false).put("error", "stale")) }
+        val state = PanelState()
+        assertEquals("Sent to Copilot", state.result(Snapshots.panelResult(JSONObject().put("ok", true).put("sent", true))).message)
+        assertEquals("Demo mode: nothing sent", state.result(Snapshots.panelResult(JSONObject().put("ok", true).put("demo", true))).message)
+        assertEquals("stale", state.result(Snapshots.panelResult(JSONObject().put("ok", false).put("error", "stale"))).message)
+    }
+    @Test fun unavailablePanelIsReprobedAndHidden() {
+        assertEquals(60_000L, panelPollDelay(available = false, visible = false))
+        assertEquals(60_000L, panelPollDelay(available = false, visible = true))
+        assertEquals(15_000L, panelPollDelay(available = true, visible = true))
+        assertNull(panelPollDelay(available = true, visible = false))
+        val shown = PanelState().receive(Snapshots.panel(panelFeed()))
+        assertTrue(shown.available)
+        val hidden = shown.copy(confirm = PanelConfirm(PanelAction("a", "A"), "A", "p", "P".repeat(43)))
+            .receive(Snapshots.panel(JSONObject("""{"available":false,"reason":"Provider stopped"}""")))
+        assertFalse(hidden.available)
+        assertNull(hidden.feed)
+        assertNull(hidden.confirm)
+    }
+    @Test fun panelAgeIsCoarse() {
+        assertEquals("Updated just now", panelAge(1_000, 30_000))
+        assertEquals("Updated 5 min ago", panelAge(0, 5 * 60_000 + 1))
+        assertEquals("Updated 3 h ago", panelAge(0, 3 * 3_600_000L))
+        assertEquals("Update time unknown", panelAge(null, 0))
     }
 }

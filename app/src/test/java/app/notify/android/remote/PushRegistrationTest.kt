@@ -8,14 +8,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PushRegistrationTest {
-    private val record = Relationship(Account("https://notify.example", "owner"), "mac", "key", "phone", "key", "Phone", true)
+    private val record = rememberedRelationship()
     private val token = "synthetic-routing-token"
     private val now = 1_800_000_000_000L
     private fun flow(change: (JSONObject) -> Unit = {}): JSONObject {
         val challenge = JSONObject().put("purpose", "push").put("origin", record.account.issuer)
-            .put("macID", record.macID).put("deviceID", record.deviceID).put("token", token).put("challenge", "n".repeat(43))
+            .put("macID", record.macID).put("deviceID", record.deviceID).put("token", token).put("challenge", "A".repeat(43))
+            .put("scope", "account").put("version", 1).put("operation", "push").put("account", record.account.json())
+            .put("publicKey", record.publicKey).put("macPublicKey", record.macPublicKey)
+            .put("registrationGeneration", JSONObject.NULL).put("challengeExpiresAt", now + 30000)
         change(challenge)
-        return JSONObject().put("id", "i".repeat(43)).put("challenge", challenge.toString()).put("expiresAt", now + 30000)
+        return JSONObject().put("id", "A".repeat(43)).put("challenge", challenge.toString()).put("expiresAt", now + 30000)
     }
     @Test fun signsOnlyExactFreshDeviceAndRawTokenBinding() = runBlocking {
         val paths = mutableListOf<String>()
@@ -23,7 +26,7 @@ class PushRegistrationTest {
         var signed = ""
         PushRegistration({ path, _ ->
             paths += path
-            if (path.endsWith("begin")) begin else JSONObject().put("enabled", true)
+            if (path.endsWith("begin")) begin else JSONObject().put("enabled", true).put("registrationGeneration", "A".repeat(43))
         }, { now }).update(record, token) { bytes -> signed = bytes.toString(Charsets.UTF_8); byteArrayOf(1) }
         assertEquals("Notify remote authorization v1\u0000" + begin.getString("challenge"), signed)
         assertEquals(listOf("/v1/remote/push/begin", "/v1/remote/push/finish"), paths)

@@ -38,8 +38,7 @@ internal fun rememberEnableAlerts(controller: ControllerViewModel, activity: Act
 
 @Composable
 internal fun EnableAlertsAction(label: String, state: ControllerState, enableAlerts: () -> Unit) {
-    Action(label, !state.busy && state.account != null && state.relationship?.enrolled == true &&
-        state.relationship.account == state.account && !state.notifications.cleanupPending &&
+    Action(label, !state.busy && state.connectionAccount != null && !state.notifications.cleanupPending &&
         !state.notificationPermissionPending, enableAlerts)
 }
 

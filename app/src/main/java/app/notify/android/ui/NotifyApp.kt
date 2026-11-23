@@ -86,19 +86,27 @@ internal fun NotifyTheme(appearance: PhoneAppearance = PhoneAppearance.System, c
 fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
     val state by controller.state.collectAsState()
     val enableAlerts = rememberEnableAlerts(controller, activity)
+    val enableBackground = rememberEnableBackgroundConnection(controller, activity)
     var destination by rememberSaveable { mutableStateOf(Destination.Chat) }
     var settingsSection by rememberSaveable { mutableStateOf(SettingsSection.Overview) }
     var settingsParent by rememberSaveable { mutableStateOf(SettingsSection.Overview) }
-    val positions = remember(state.account, state.relationship) { mutableMapOf<Target, FeedPosition>() }
-    val feedback = remember(state.account, state.relationship) { mutableStateMapOf<RemoteRequest, String>() }
+    val positions = remember(state.connectionAccount, state.relationship) { mutableMapOf<Target, FeedPosition>() }
+    val feedback = remember(state.connectionAccount, state.relationship) { mutableStateMapOf<RemoteRequest, String>() }
     LaunchedEffect(state.inbox.cards) {
         feedback.keys.retainAll(state.inbox.cards.map { it.request }.toSet())
     }
     val route = controllerRoute(state)
+    val dashboardShown = destination == Destination.Dashboard && state.dashboardEnabled && state.panel.available &&
+        route == ControllerRoute.Chat && state.notices == null
+    LaunchedEffect(dashboardShown) { controller.dashboardVisible(dashboardShown) }
+    LaunchedEffect(state.dashboardEnabled, state.panel.available) {
+        if ((!state.dashboardEnabled || !state.panel.available) && destination == Destination.Dashboard) destination = Destination.Requests
+    }
     val back: () -> Unit = {
         when {
             state.notices != null -> controller.closeNotices()
             state.review != null || state.controlReview != null -> controller.cancelReview()
+            state.panel.confirm != null -> controller.cancelPanelAction()
             route == ControllerRoute.Notifications -> controller.finishNotificationSetup()
             route == ControllerRoute.Offline -> controller.readSavedConversations(false)
             destination == Destination.Settings && settingsSection != SettingsSection.Overview -> {
@@ -110,7 +118,7 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
     }
     val canGoBack = state.notices != null || route in setOf(ControllerRoute.Notifications, ControllerRoute.Offline) || destination != Destination.Chat
     NotifyTheme(state.appearance) {
-        BackHandler(canGoBack || state.review != null || state.controlReview != null, back)
+        BackHandler(canGoBack || state.review != null || state.controlReview != null || state.panel.confirm != null, back)
         val title = when {
             state.notices != null -> "Third-party notices"
             route == ControllerRoute.Notifications -> "Notifications"
@@ -120,6 +128,7 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
             route == ControllerRoute.SignIn -> "Sign in"
             route == ControllerRoute.Trust -> "Mac approval"
             destination == Destination.Requests -> "Needs you"
+            destination == Destination.Dashboard -> state.panel.feed?.title ?: "Dashboard"
             else -> state.workspace.session?.name ?: if (state.workspace.sessionID == null) "Notify" else "Session unavailable"
         }
         ChatShell(state, destination, title, canGoBack, back,
@@ -132,6 +141,7 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
                 settingsSection = SettingsSection.Connection
                 settingsParent = SettingsSection.Overview
             },
+            onAttention = { if (controller.openCurrentAttention()) destination = Destination.Chat },
         ) { openSessions ->
             Column(Modifier.fillMaxSize()) {
                 if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -163,7 +173,7 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
                     state.notices != null -> Notices(state.notices!!, controller::closeNotices)
                     route == ControllerRoute.Notifications -> NotificationSetup(state, controller, enableAlerts)
                     destination == Destination.Settings -> Settings(state, controller, activity, enableAlerts,
-                        settingsSection, { settingsParent = settingsSection; settingsSection = it })
+                        settingsSection, { settingsParent = settingsSection; settingsSection = it }, enableBackground)
                     route == ControllerRoute.Offline -> SavedConversations(state.visibleSavedHistory) {
                         controller.readSavedConversations(false)
                     }
@@ -171,6 +181,7 @@ fun NotifyApp(controller: ControllerViewModel, activity: Activity) {
                     route == ControllerRoute.SignIn -> SignIn(state, controller, activity)
                     route == ControllerRoute.Trust -> ConnectionSetup(state, controller)
                     destination == Destination.Requests -> Inbox(state, controller, feedback)
+                    destination == Destination.Dashboard -> Dashboard(state, controller)
                     else -> Sessions(state, controller, positions, feedback, openSessions)
                 }
             }
@@ -239,7 +250,9 @@ internal fun Page(content: @Composable ColumnScope.() -> Unit) {
         verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
 }
 @Composable internal fun Heading(text: String) { Text(text, style = MaterialTheme.typography.headlineSmall) }
-@Composable internal fun Supporting(text: String) { Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+@Composable internal fun Supporting(text: String, modifier: Modifier = Modifier) {
+    Text(text, modifier, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
 @Composable internal fun Action(label: String, enabled: Boolean = true, onClick: () -> Unit) {
     Button(onClick = onClick, enabled = enabled, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) { Text(label) }
 }
@@ -314,6 +327,12 @@ private fun Inbox(state: ControllerState, controller: ControllerViewModel, feedb
             }
             if (cards.size > 1) Picker("Review request", cards.map { it.request.ticket to "${it.request.sessionName} · ${it.request.prompt.title}" },
                 card?.request?.ticket ?: "", controller::selectRequest)
+            if (state.live && state.visibleAttention.handover && card != null &&
+                state.visibleAttention.projection?.current?.matches(card.request) == true) {
+                TextButton(onClick = { controller.selectRequest(card.request.ticket) }) {
+                    Text("Select current Mac request")
+                }
+            }
         }
         if (card == null) {
             Text(if (state.live) if (sessionID == null) "No waiting requests reported by your Mac."
@@ -425,6 +444,14 @@ internal fun Sessions(state: ControllerState, controller: ControllerViewModel,
     val workspace = state.workspace
     var pane by rememberSaveable(workspace.sessionID) { mutableStateOf(SessionPane.Chat) }
     var sessionSettings by rememberSaveable(workspace.sessionID) { mutableStateOf(false) }
+    LaunchedEffect(state.decisionFocus) {
+        if (state.decisionFocus > 0 && state.inbox.visibleCards.any {
+            it.request.ticket == state.inbox.selectedTicket && it.request.sessionID == workspace.sessionID
+        }) {
+            pane = SessionPane.Decision
+            sessionSettings = false
+        }
+    }
     if (sessionSettings) {
         BackHandler { sessionSettings = false }
         SessionSettings(state, { sessionSettings = false }, controller::prepareSessionAction)

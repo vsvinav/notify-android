@@ -9,7 +9,7 @@
 Requires **Android 9 or later on an arm64 device**, an awake Mac running Notify,
 and access to the compatible Notify internet service.
 
-1. Download the APK and checksum from this private repository's
+1. Download the APK and checksum from this repository's
    [releases](https://github.com/vsvinav/notify-android/releases).
 2. Verify the download against its published SHA-256 checksum. Install only an
    APK from a source you trust; a checksum is not an Android trust certification.
@@ -21,12 +21,46 @@ and access to the compatible Notify internet service.
 For updates, install the new APK over Notify without uninstalling or clearing its
 data. Updates must use the same signing identity to retain the saved pairing.
 
-**Current prerelease:** **[0.3.3 beta](https://github.com/vsvinav/notify-android/releases/tag/v0.3.3-beta.1)**.
-The release includes the installable APK and its SHA-256 checksum, QR scanning,
-reconnect improvements, Mac-style agents, the matching amber lightning icon and
-the controls below. This is an agent-tested preview, not full physical-device
-acceptance; read its known limitations before installing. New session controls
-require matching updated Mac/helper builds.
+**0.3.6 beta / version code 9:** **[APK and checksum](https://github.com/vsvinav/notify-android/releases/tag/v0.3.6-beta.1)**.
+This preview adds the default-off Custom dashboard, optional remembered-phone
+access, an opt-in background connection and the shared pending-request strip,
+alongside the existing offline reader and session controls. Use
+[Mac 0.2.0 beta 8 / build 18](https://github.com/vsvinav/notify/releases/tag/v0.2.0-beta.8)
+and its matching helper from `feature/dashboard-panel`. Remembered access also
+requires compatible service support. The APK and automated checks are not full
+physical-device or live-action acceptance; read the release's limitations.
+
+The APK is named `Notify-Android-0.3.6-beta.1-arm64.apk`; Android displays app
+version **0.3.6**. After downloading it and `SHA256SUMS.txt` into the same folder,
+you can verify them on a Mac with `shasum -a 256 -c SHA256SUMS.txt` (or use a trusted
+SHA-256 checker on Android). A mismatch means do not install; download again from
+the release. The signing identity is preserved from the earlier preview, but
+installation on a new phone still needs new pairing.
+
+### Changing phones
+
+1. Download, checksum-check and install the new APK as above on the new phone.
+   No uninstall, reset or access to your old phone is required.
+2. On your Mac, enable Internet access and prepare a **fresh pairing invitation**.
+   Scan that QR on the new phone, or paste the complete pairing link.
+3. Sign in with your account passkey. If that passkey is not available on the new
+   phone, use your passkey provider's supported recovery/sign-in method; Notify
+   cannot bypass passkey verification. Account sign-in alone does not trust a phone.
+4. Compare the **complete new phone public key** on both devices and explicitly
+   approve it on the Mac. Do not copy private keys, app-private files or remembered
+   authorization from the old phone. The new phone gets its own identity.
+5. Choose notifications, background connection and **Remember this phone**
+   separately if wanted. Remembering requires another fresh passkey and a new,
+   explicit Mac confirmation; old pairing or remembered approval never transfers.
+6. If you want to retire the old phone, explicitly revoke that device on the Mac.
+   New-phone setup does **not** revoke it automatically. Check the device/key
+   carefully before revoking; uninstalling or deleting local keys is not revocation.
+
+An expired invitation must be replaced with a fresh one on the Mac; no release,
+download or reinstall bypasses invitation expiry, account authorization or key
+approval. For an incomplete enrollment, follow [pairing recovery](#connect-your-mac).
+
+### Earlier preview checks
 
 0.3.1 fixes missing foreground alerts and preserves editable drafts during
 reconnection or uncertain delivery. With Mac beta 5/build 11, background alerts
@@ -95,6 +129,35 @@ and the read-only reader, including narrow enlarged-text layout. The signed
 candidate was installed in place. Physical keyboard typing, the full production
 disconnect/restart flow and TalkBack remain unverified; these checks are not a
 claim of complete device acceptance.
+
+## Global pending-request strip
+
+With matching updated Mac/helper builds, a compact strip above chat, Settings,
+Needs you and Dashboard mirrors the Mac's current pending decision. Its
+**+N OTHER waiting requests** count excludes the current request. Tap the strip
+to open that exact request in **Decision**; the tap clears session filters but
+does not answer or send anything. Phone drafts and permission confirmations are
+unchanged. Selecting another request on the Mac changes the shared strip;
+browsing on the phone does not change the Mac's selection.
+
+Sending is not completion. The strip advances only when the Mac's canonical
+selection advances after acknowledgment, explicit withdrawal, or an explicit
+Mac selection. Automatically handled new requests are excluded. Disconnect,
+replay and refresh can leave one **status unconfirmed** display; it cannot
+authorize a reply. Missing/older helper support does not announce all-clear.
+
+If the Mac app restarts while a request is retained, the strip keeps that old
+request unconfirmed rather than claiming it was resolved. Use **Browse
+decisions**, choose the freshly reported current request, and tap **Select
+current Mac request** if shown. Exact reobservation of the same request also
+restores the strip. If no current request is reported, check the Mac.
+Signing out or forgetting/replacing the pairing clears the private strip.
+It is not stored across phone process restarts and adds no background polling.
+
+Fictional native strip fixtures passed on the earlier 0.3.5 development build.
+The exact 0.3.6/code 9 candidate has a prior in-place installation/launch receipt;
+that is not visual, real approval-action or new-phone acceptance. No new physical
+checks are claimed for this release preparation.
 
 ## Native screenshots
 
@@ -193,7 +256,9 @@ replaced silently.
 
 An enrolled pairing is saved on this phone. Signing in to its matching account
 reconnects it; switching back to Notify reconnects an active session. Account
-sign-in itself is not persisted across app restarts. A different account does
+sign-in itself is not persisted across app restarts; separately approved
+[remembered-phone access](#remember-this-phone) can reconnect within its fixed
+expiry. A different account does
 not acquire the saved Mac's access. Disconnection does not resend replies,
 instructions or uncertain operations. The Mac must remain awake and online.
 If an existing channel's routing renewal returns HTTP401, Notify retires that channel
@@ -366,6 +431,155 @@ remain Mac-only. Native Android camera/permission behavior, visual layout and
 stable physical-phone connectivity require device acceptance; synthetic QR/JVM
 tests do not establish those outcomes.
 
+## Remember this phone
+
+Android **0.3.6 / version code 9** pairs with Mac beta 8/build 18 and compatible service support. In
+**Settings → Pairing & security**, choose **Remember with a fresh passkey**.
+This optional setting defaults **Off**, including existing pairings.
+
+1. Complete a real passkey sign-in for the paired account.
+2. On your Mac, approve the **new remembered-phone request**, comparing the
+   complete phone public key and the fixed authorization expiry shown on both
+   devices. Previous pairing approval does not count.
+3. Wait for confirmed approval. **Pending** is not new access; if the result is
+   uncertain, use **Check Mac confirmation**, not repeated enable requests.
+
+Remembered device access is separate from the one-hour passkey account session.
+It permits this paired phone to reconnect using its existing protected key,
+including after restarting Notify, until the fixed maximum 30-day expiry.
+It cannot pair devices or change account/trust settings. Cached conversations
+remain display-only. Anyone able to use this phone may access the Mac during
+that window; the existing Android key policy is unchanged.
+
+Expiry never slides. Extending it requires another explicit opt-in, fresh
+passkey and new Mac confirmation. An existing approval stays separate from a
+pending renewal. Background connection and attention-alert consent remain
+independent; remembered access does not start a background service at boot.
+
+**Sign out and stop remembering** immediately stops this phone's connection
+and local alerts, saves local Off, and tries to cancel/revoke its captured
+pending and approved authorizations. It retains the pairing and key.
+Offline or unconfirmed cleanup may leave server authorization active until
+expiry, and push routing may separately remain. Revoke the phone from your
+Mac to remove both. A phone-storage failure is reported explicitly: durable
+sign-out cannot be promised until storage is repaired and sign-out succeeds.
+**Forget this phone’s pairing** additionally deletes the local key and pairing.
+
+Physical passkey, Mac-consent, long-duration, push-delivery and native visual
+acceptance remain separate from source/build verification.
+
+## Custom dashboard
+
+Android **0.3.6 / version code 9** includes this optional preview feature.
+The optional dashboard is native Compose, not a browser wrapper. Fictional native
+layout and interaction checks passed on the earlier 0.3.5 development build;
+physical acceptance of 0.3.6 remains separate.
+
+1. Configure **one trusted local provider** on your Mac using the
+   [generic provider guide](https://github.com/vsvinav/notify-mobile/blob/feature/dashboard-panel/docs/dashboard-provider.md).
+   No private workflow, tracker credentials, automation scripts or work provider
+   are included in Notify.
+2. On this phone, open **Settings → Custom dashboard** and turn it **On**.
+   The choice is saved on this phone independently of accounts, pairing, Internet
+   access, background connection and notification consent. First installs and
+   upgrades without a saved choice start **Off**.
+3. Connect to your paired Mac. **Dashboard** appears in the drawer when a
+   compatible provider is available. The provider chooses the tabs and content.
+
+While Off, Notify performs no dashboard discovery or polling and hides its drawer
+entry. Turning it off leaves the encrypted transport, pairing, notifications and
+ordinary conversations unchanged. It cancels local read/preview authority and
+prevents future dashboard dispatch; an encrypted request already started may finish.
+Its stale read response is ignored. Already-dispatched actions cannot be undone:
+their correlated result or uncertainty remains visible in Settings. Nothing is
+automatically retried.
+
+While On, an open, available dashboard refreshes every 15 seconds. An unavailable
+provider is checked every 60 seconds in the foreground. An available dashboard
+does not poll while hidden, and no dashboard polls start while the app is in the
+background, even with Background connection enabled. Stale/offline content is
+labeled and its actions are disabled. The ordinary Notify attention strip stays
+above the dashboard; provider display metadata cannot approve a Mac request.
+
+### Stages and recent activity
+
+Providers may supply an ordered stage track and exact item placements. Empty
+earlier stages do **not** mean completed work. Items without placements remain
+ordinary cards. Invalid optional track metadata falls back to those cards without
+discarding the content. Attention sections have a distinct treatment. Tap an
+item to read details, its original actions and any recent activity. Logs are plain
+provider-ordered text, not full transcripts; omitted entries are labeled.
+
+### Optional text form
+
+A provider may place one text field at the top of a tab—for example, a fictional
+community notebook's **Add a note** form. Its title and review-button label come
+from the provider, not a built-in work workflow.
+
+- The counter uses UTF-16 units (some emoji count as two). The provider sets a
+  minimum and maximum up to 300. Blank text and unsupported control characters
+  cannot be submitted. Input beyond the phone's 300-unit limit is not accepted.
+- A tap requests a preview only. Review **your exact text** and the **exact
+  provider-generated instruction**, then choose the separate **Send** or **Cancel**.
+  Spaces, quotes and Unicode are preserved; changing a draft requires a fresh
+  preview. A provider restart or replacement cannot reuse an old confirmation.
+- Drafts stay in memory, scoped to the exact account/paired Mac's configured
+  provider slot, tab ID and action ID—not display titles. They survive tab
+  switches, cancellation, Off, disconnection and failures in the same app process.
+  Signing out, retiring the pairing or ending the process clears them.
+- Only a confirmed **sent** result clears the unchanged submitted draft. Editing
+  it while a send is pending keeps the newer text. Demo mode, timeout, failure,
+  uncertainty and stale callbacks do not clear it. Chat drafts are separate.
+
+The shared mutation wait remains 25 seconds; unknown delivery is never permission
+to replay. A preview token is bound to the exact text and provider instruction.
+No provider credential or private instruction template is exposed to the phone.
+The dashboard does not extend account or remembered-device authorization.
+
+## Keep connected in background
+
+In Android **0.3.6 / version code 9**,
+**Settings → Connection**, connect to your paired Mac, then turn on
+**Keep connected in background**. It is optional and **Off by default**.
+When off, leaving Notify closes the channel; returning reconnects with the saved
+pairing while an account session or explicitly approved remembered access remains valid.
+
+When enabled, a foreground service keeps the same encrypted channel while you
+switch apps or finish the Activity. Chat/workspace and Dashboard polling and UI
+clocks pause while hidden. Returning fetches fresh state before enabling controls;
+old confirmations are cleared. In-flight actions retain their exact outcome or
+are marked uncertain, never automatically resent.
+
+Android 13+ may request notification permission. The separate, quiet
+**Background connection** channel shows connection status, opens Notify, and
+offers **Stop**. If permission or the channel is disabled, enabling fails with an
+Android settings link. This permission does **not** opt you into Mac attention
+alerts, register FCM delivery, or change vibration preferences.
+
+Turn the setting off, tap notification **Stop**, or use **Disconnect** to end the
+connection and service without deleting your account or pairing. Sign-out,
+forgetting the pairing, and terminal authorization failures also stop the mode.
+Android 14+ can dismiss the notification without stopping the service; use the
+in-app setting or Android's active-apps **Stop** control instead.
+
+This is best effort, not an always-connected guarantee. The current account
+session has a fixed **one-hour lifetime from sign-in**, which this setting does
+not extend. Separately approved remembered-phone access has its own fixed expiry.
+Without it, actual sign-in is required again after account expiry. Mac sleep, network
+loss, Android process termination and force-stop can interrupt the connection.
+Android Task Manager Stop need not deliver cleanup callbacks; it does not promise
+server logout or deletion of saved pairing/preferences. Enable the mode again
+from the foreground after a process restart—there is no boot, push-triggered or
+sticky restart.
+
+The service uses normal `FOREGROUND_SERVICE`,
+`FOREGROUND_SERVICE_CONNECTED_DEVICE`, and `CHANGE_NETWORK_STATE` permissions;
+these have no runtime popup. Notify does not change Wi-Fi/mobile data or request
+battery-optimization exemptions, wake locks, boot or Bluetooth permissions for
+this feature. Source/build checks are not device persistence tests or evidence of
+Play approval. Physical lifecycle, locked-screen and long-duration acceptance
+remain pending for this candidate.
+
 ## Background notifications
 
 Opt in during the first connected setup step, or under **Settings → Notifications**
@@ -440,8 +654,10 @@ the key. If offline/signed out, the UI honestly retains pending routing cleanup.
 Server revocation removes routing with the device; a queued generic alert cannot
 authorize an action. Your Mac must be awake, online and running the updated helper.
 
-Build requirements: the matching private `app/google-services.json`, SDK 35,
-JDK 17 and the existing native crypto artifact. Do not commit service-account keys.
+Build requirements: the matching local `app/google-services.json`, SDK 35,
+JDK 17 and the existing native crypto artifact. Firebase client configuration
+identifies the public client; it is not a service-account secret. Keep local
+configuration out of commits, and never publish service-account or signing keys.
 The APK includes notification SDK notices alongside native crypto notices.
 
 ## Releases and updates
@@ -455,12 +671,20 @@ with the installable APK attached. An update is not published as source code onl
 
 Before publishing:
 
-- Increment Android's version code and version name.
+- Give each new app build a newer version code and version name. Publishing the
+  already-verified 0.3.6/code 9 candidate as `v0.3.6-beta.1` does not rebuild it
+  or require a second version bump; the prior public preview was 0.3.3/code 6.
 - Complete the relevant regression and real internet-connection checks.
 - Verify the APK's signature, native libraries, alignment, and dependency notices.
 - Preserve the signing identity so existing installations can update.
 - Attach the verified APK and its SHA-256 checksum to the release.
 - Describe changes and any known limitations in the release notes.
+
+The current preview retains the earlier APK's signing identity and is
+non-debuggable, although the existing build configuration calls that local
+signing configuration `debug`. This is a sideloaded beta, not a Play production
+signing setup. Preserve the private keystore outside source control and release
+assets; never silently change signers for an update.
 
 The current native library targets arm64 Android devices running Android 9 or
 later. Real-device acceptance remains required before calling a build ready.

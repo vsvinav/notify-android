@@ -5,6 +5,46 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ConnectionLifetimeTest {
+    @Test fun oldOrdinaryControlFailureCannotOverwriteAnotherRequestOrAccount() {
+        val old = ControlCommand("old", "session", "ticket", "send", "Hello", "")
+        val fresh = WorkspaceState().sending(old.copy(id = "new"))
+        assertSame(fresh, fresh.uncertain(old))
+        val otherAccount = WorkspaceState()
+        assertSame(otherAccount, otherAccount.uncertain(old))
+    }
+
+    @Test fun retiringChannelImmediatelyMarksAllPendingControlsUncertain() {
+        val send = ControlCommand("send", "session", "ticket", "send", "Hello", "")
+        val policy = send.copy(id = "policy", action = "dangerous_auto_yes", enabled = true)
+        val management = send.copy(id = "management", action = "remove_subagent")
+        val session = send.copy(id = "session", action = "resume_session", sourceID = "source")
+        val sending = WorkspaceState().sending(send).sending(policy).sending(management).sending(session)
+        val retired = ControllerState(workspace = sending).retireConnection().workspace
+        assertTrue(retired.deliveries.getValue(send.target).status.contains("unknown"))
+        assertTrue(retired.policyDeliveries.getValue(policy.target).status.contains("unknown"))
+        assertTrue(retired.managementDeliveries.getValue(management.target).status.contains("unknown"))
+        assertTrue(retired.sessionDeliveries.getValue(session.sessionActionKey).status.contains("unknown"))
+        assertTrue(retired.deliveries.getValue(send.target).blocked)
+        assertTrue(retired.sessionDeliveries.getValue(session.sessionActionKey).blocked)
+    }
+
+    @Test fun retiredPanelActionCannotCompleteOrClearANewerRequest() {
+        val confirm = PanelConfirm(PanelAction("status:APA-1", "Status"), "Status", "Exact prompt", "P".repeat(43))
+        val sending = PanelState(pending = PanelPending("old-request", confirm.action.id, sending = true), confirm = confirm)
+        val retired = ControllerState(panel = sending).retireConnection().panel
+        assertNull(retired.pending)
+        assertNull(retired.confirm)
+        assertTrue(retired.message!!.contains("uncertain"))
+        val fresh = retired.copy(pending = PanelPending("new-request", confirm.action.id, sending = false), message = null)
+        assertSame(fresh, fresh.finish("old-request", message = "Old failure"))
+        assertSame(fresh, fresh.finish("old-request", confirm = confirm))
+        val completed = fresh.finish("new-request", confirm = confirm)
+        assertNull(completed.pending)
+        assertEquals(confirm, completed.confirm)
+        assertNull(completed.message)
+        assertNull(ControllerState(panel = fresh).retireConnection().panel.message)
+    }
+
     private val question = Question("q", "Where?", false, true, emptyList())
     private val request = RemoteRequest("ticket", "session", "Build",
         Prompt("request", "question", "Destination", questions = listOf(question)))

@@ -14,8 +14,8 @@ android {
         applicationId = "app.notify.android"
         minSdk = 28
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.3.3"
+        versionCode = 9
+        versionName = "0.3.6"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         ndk {
             abiFilters += "arm64-v8a"

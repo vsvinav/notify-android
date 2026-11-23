@@ -27,7 +27,7 @@ internal fun drawerKeepsPinnedChrome(availableHeightDp: Float, fontScale: Float)
 internal fun controllerRoute(state: ControllerState): ControllerRoute = when {
     state.relationship == null -> ControllerRoute.Pairing
     state.offlineReader && state.visibleSavedHistory.conversations.isNotEmpty() -> ControllerRoute.Offline
-    state.account == null || state.account != state.relationship.account -> ControllerRoute.SignIn
+    state.account != state.relationship.account && state.deviceAccess == null -> ControllerRoute.SignIn
     // Every handshake reports pending; authenticated history must not be replaced by setup.
     !state.relationship.enrolled || state.status.state == "pending" && state.workspace.snapshot == null -> ControllerRoute.Trust
     state.notificationSetupOpen || state.shouldOfferNotificationSetup() -> ControllerRoute.Notifications
